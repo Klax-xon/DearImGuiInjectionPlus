@@ -1,0 +1,224 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using BepInEx;
+using BepInEx.Configuration;
+using DearImGuiInjectionPlus.Patches;
+using DearImGuiInjectionPlus.Windows;
+using HarmonyLib;
+using MonoMod.RuntimeDetour;
+using RendererFinder;
+using RendererFinder.Renderers;
+using UnityEngine;
+
+namespace DearImGuiInjectionPlus.BepInEx;
+
+[BepInPlugin(Metadata.GUID, Metadata.Name, Metadata.Version)]
+public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
+{
+    private Hook _eventSystemUpdateHook;
+    private Harmony _harmony;
+    private ConfigFile _customConfigFile;
+
+    private void Awake()
+    {
+        Log.Init(new BepInExLog(Logger));
+        Log.Info($"[DearImGuiInjectionPlus] Starting plugin bootstrap v{Metadata.Version} by {Metadata.Author}");
+
+        var deviceType = SystemInfo.graphicsDeviceType;
+        Log.Info($"[DearImGuiInjectionPlus] Unity Engine Graphics Backend: {deviceType}");
+        if (deviceType == UnityEngine.Rendering.GraphicsDeviceType.Direct3D11)
+        {
+            RendererFinder.RendererFinder.TargetRendererKind = RendererKind.D3D11;
+        }
+        else if (deviceType == UnityEngine.Rendering.GraphicsDeviceType.Direct3D12)
+        {
+            RendererFinder.RendererFinder.TargetRendererKind = RendererKind.D3D12;
+        }
+        else
+        {
+            Log.Error($"[DearImGuiInjectionPlus] Unsupported graphics backend: {deviceType}");
+        }
+
+        PreloadNativeLibraries();
+
+        // Ensure config is strictly saved to DearImGuiInjectionPlus.cfg
+        var configFilePath = Path.Combine(Paths.ConfigPath, "DearImGuiInjectionPlus.cfg");
+        _customConfigFile = new ConfigFile(configFilePath, true, Info.Metadata);
+
+        var cursorVisibilityConfig = new BepInExConfigEntry<VirtualKey>(
+            _customConfigFile.Bind(
+                "Keybinds",
+                "CursorVisibility",
+                DearImGuiInjectionPlus.CursorVisibilityToggleDefault,
+                "Key for switching the Dear ImGui cursor and menu visibility."));
+
+        var blockAllInputsConfig = _customConfigFile.Bind(
+            "InputBlocking",
+            "BlockAllInputsWhenOpen",
+            true,
+            "Whether all game mouse clicks and keyboard inputs are swallowed while the menu is open.");
+
+        DearImGuiInjectionPlus.BlockAllInputsWhenOpen = blockAllInputsConfig.Value;
+
+        var assetsFolder = Path.Combine(Path.GetDirectoryName(Info.Location), "Assets");
+        if (!Directory.Exists(assetsFolder))
+        {
+            var fallback = Path.Combine(Paths.PluginPath, "DearImGuiInjectionPlus", "Assets");
+            if (Directory.Exists(fallback))
+            {
+                assetsFolder = fallback;
+            }
+        }
+
+        DearImGuiInjectionPlus.Init(Paths.ConfigPath, assetsFolder, cursorVisibilityConfig);
+
+        try
+        {
+            _harmony = new Harmony(Metadata.GUID);
+            _harmony.PatchAll(Assembly.GetExecutingAssembly());
+            Log.Info("[DearImGuiInjectionPlus] Successfully applied Harmony patches for cursor management.");
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[DearImGuiInjectionPlus] Failed to apply Harmony patches: {ex}");
+        }
+
+        SetupIgnoreUIObjectsWhenImGuiCursorIsVisible();
+
+        gameObject.AddComponent<UnityMainThreadDispatcher>();
+
+        Log.Info("[DearImGuiInjectionPlus] Bootstrap complete.");
+    }
+
+    private void PreloadNativeLibraries()
+    {
+        try
+        {
+            var pluginDir = Path.GetDirectoryName(Info.Location);
+            var searchPaths = new[]
+            {
+                Path.Combine(pluginDir, "cimgui.dll"),
+                Path.Combine(pluginDir, "libs", "cimgui", "win-x64", "cimgui.dll"),
+                Path.Combine(Paths.PluginPath, "DearImGuiInjectionPlus", "cimgui.dll"),
+                Path.Combine(Paths.PluginPath, "DearImGuiInjectionPlus", "libs", "cimgui", "win-x64", "cimgui.dll"),
+                Path.Combine(Paths.BepInExRootPath, "plugins", "DearImGuiInjectionPlus", "cimgui.dll"),
+            };
+
+            foreach (var path in searchPaths)
+            {
+                if (File.Exists(path))
+                {
+                    var handle = Kernel32.LoadLibrary(path);
+                    if (handle != IntPtr.Zero)
+                    {
+                        Log.Info($"[DearImGuiInjectionPlus] Preloaded native cimgui.dll from: {path}");
+                        return;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[DearImGuiInjectionPlus] PreloadNativeLibraries exception: {ex.Message}");
+        }
+    }
+
+    private void SetupIgnoreUIObjectsWhenImGuiCursorIsVisible()
+    {
+        try
+        {
+            var allFlags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
+            var unityEngineUIDll = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(ass => ass.GetName().Name == "UnityEngine.UI");
+            if (unityEngineUIDll == null)
+            {
+                return;
+            }
+
+            var eventSystemType = unityEngineUIDll.GetType("UnityEngine.EventSystems.EventSystem");
+            if (eventSystemType == null)
+            {
+                return;
+            }
+
+            var eventSystemUpdate = eventSystemType.GetMethod("Update", allFlags);
+            if (eventSystemUpdate != null)
+            {
+                _eventSystemUpdateHook = new Hook(eventSystemUpdate, new Action<Action<object>, object>(IgnoreUIObjectsWhenImGuiCursorIsVisible));
+                Log.Info("[DearImGuiInjectionPlus] Successfully hooked UnityEngine.EventSystems.EventSystem.Update");
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Warning($"[DearImGuiInjectionPlus] Could not hook EventSystem.Update (game might not use uGUI): {e.Message}");
+        }
+    }
+
+    private static void IgnoreUIObjectsWhenImGuiCursorIsVisible(Action<object> orig, object self)
+    {
+        // Drop uGUI raycasts and event updates whenever Dear ImGui cursor is active
+        if (DearImGuiInjectionPlus.IsCursorVisible && DearImGuiInjectionPlus.BlockAllInputsWhenOpen)
+        {
+            return;
+        }
+
+        if (DearImGuiInjectionPlus.IsCursorVisible && DearImGuiInjectionPlus.Initialized && DearImGuiInjectionPlus.IO.WantCaptureMouse)
+        {
+            return;
+        }
+
+        orig(self);
+    }
+
+
+    private void OnDestroy()
+    {
+        Log.Info("[DearImGuiInjectionPlus] Engine shutdown initiated...");
+        RendererFinder.RendererFinder.IsShuttingDown = true;
+        var isDx12 = RendererFinder.RendererFinder.TargetRendererKind == RendererFinder.Renderers.RendererKind.D3D12
+                  || RendererFinder.RendererFinder.RendererKind == RendererFinder.Renderers.RendererKind.D3D12;
+
+        // 1. Restore WndProc immediately so window messages pass natively
+        InputManager.Unsubclass();
+
+        try
+        {
+            NewInputSystemBlocker.SetBlocked(false);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[DearImGuiInjectionPlus] Error unblocking NewInputSystem on shutdown: {ex.Message}");
+        }
+
+        try
+        {
+            _harmony?.UnpatchSelf();
+            _harmony = null;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[DearImGuiInjectionPlus] Error unpatching Harmony: {ex.Message}");
+        }
+
+        _eventSystemUpdateHook?.Dispose();
+        _eventSystemUpdateHook = null;
+
+        // 2. Shut down ImGui backends and flush GPU resources
+        DearImGuiInjectionPlus.Dispose();
+
+        // 3. Disable native DXGI hooks (restores original dxgi.dll bytes)
+        RendererFinder.RendererFinder.Dispose();
+
+        Log.Info("[DearImGuiInjectionPlus] Plugin shutdown completed safely.");
+
+        // 4. Clean fast exit for DX12:
+        // Unity 6 with D3D12 Agility SDK crashes during Mono's post-shutdown ComputeBuffer GC sweep.
+        // Since all save data, Steam/EOS, and plugins have finished teardown, terminate the process
+        // cleanly in kernel mode to prevent the driver crash dialog.
+        if (isDx12)
+        {
+            System.Diagnostics.Process.GetCurrentProcess().Kill();
+        }
+    }
+}

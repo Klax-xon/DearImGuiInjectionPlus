@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<OutputType>Library</OutputType>
+		<AssemblyName>DearImGuiInjectionPlus</AssemblyName>
+		<RootNamespace>DearImGuiInjectionPlus</RootNamespace>
+		<PlatformTarget>AnyCPU</PlatformTarget>
+		<LangVersion>preview</LangVersion>
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<DebugSymbols>true</DebugSymbols>
+		<DebugType>embedded</DebugType>
+		<Optimize>true</Optimize>
+		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+		<TargetFramework>netstandard2.0</TargetFramework>
+		<OutputPath>../bin/</OutputPath>
+		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+		<DefineConstants>NETSTANDARD2_0</DefineConstants>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.0.0" />
+		<PackageReference Include="BepInEx.Core" Version="5.4.21" />
+		<PackageReference Include="MonoMod.RuntimeDetour" Version="22.5.1.1" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="../RendererFinder/RendererFinder.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Reference Include="UnityEngine">
+			<HintPath>..\libs\net35\UnityEngine.dll</HintPath>
+			<Private>False</Private>
+		</Reference>
+		<Reference Include="UnityEngine.UI">
+			<HintPath>..\libs\net35\UnityEngine.UI.dll</HintPath>
+			<Private>False</Private>
+		</Reference>
+		<Reference Include="ImGui.NET">
+			<HintPath>../libs/netstandard2.0/ImGui.NET.dll</HintPath>
+		</Reference>
+	</ItemGroup>
+
+	<ItemGroup>
+		<None Include="Assets\**\*.*">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<None Include="..\libs\cimgui\win-x64\cimgui.dll">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<Link>cimgui.dll</Link>
+		</None>
+	</ItemGroup>
+</Project>
