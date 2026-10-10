@@ -179,9 +179,6 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
         var isDx12 = RendererFinder.RendererFinder.TargetRendererKind == RendererFinder.Renderers.RendererKind.D3D12
                   || RendererFinder.RendererFinder.RendererKind == RendererFinder.Renderers.RendererKind.D3D12;
 
-        // 1. Restore WndProc immediately so window messages pass natively
-        InputManager.Unsubclass();
-
         try
         {
             NewInputSystemBlocker.SetBlocked(false);
@@ -204,15 +201,27 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
         _eventSystemUpdateHook?.Dispose();
         _eventSystemUpdateHook = null;
 
-        // 2. Shut down ImGui backends and flush GPU resources
-        DearImGuiInjectionPlus.Dispose();
+        // TH-01: Quiesce protocol — drain in-flight render frames before teardown
+        // (a) Close and drain in-flight render frames
+        if (!FrameGate.CloseAndDrain(1000))
+        {
+            Log.Warning("[DearImGuiInjectionPlus] Teardown drain timed out; skipping destruction to avoid use-after-free crash.");
+            if (isDx12)
+            {
+                System.Diagnostics.Process.GetCurrentProcess().Kill();
+            }
+            return;
+        }
 
-        // 3. Disable native DXGI hooks (restores original dxgi.dll bytes)
+        // (b) Disable native DXGI hooks (now safe because nothing new enters)
         RendererFinder.RendererFinder.Dispose();
+
+        // (c)-(f) Wait on fence (D3D12), release GPU objects, restore WndProc, save config & destroy context
+        DearImGuiInjectionPlus.Dispose();
 
         Log.Info("[DearImGuiInjectionPlus] Plugin shutdown completed safely.");
 
-        // 4. Clean fast exit for DX12:
+        // Clean fast exit for DX12:
         // Unity 6 with D3D12 Agility SDK crashes during Mono's post-shutdown ComputeBuffer GC sweep.
         // Since all save data, Steam/EOS, and plugins have finished teardown, terminate the process
         // cleanly in kernel mode to prevent the driver crash dialog.

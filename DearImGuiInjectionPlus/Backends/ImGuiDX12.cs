@@ -89,8 +89,10 @@ internal static class ImGuiDX12
         RendererFinder.Renderers.DX12Renderer.OnExecuteCommandList -= RetrieveCommandQueue;
         RendererFinder.Renderers.DX12Renderer.OnPresent -= OnPresent;
 
-        InputManager.Unsubclass();
+        // (c) D3D12: signal and wait on the fence for the presenting queue (DXH-05)
+        WaitForGpuIdle();
 
+        // (d) release GPU objects
         try { ImGuiDX12Impl.Shutdown(); } catch { }
 
         try { _commandList?.Dispose(); } catch { }
@@ -120,9 +122,6 @@ internal static class ImGuiDX12
 
     private static void WaitForGpuIdle()
     {
-        if (RendererFinder.RendererFinder.IsShuttingDown)
-            return;
-
         if (_commandQueue == null || _fence == null || _fenceEvent == null)
             return;
 
@@ -133,7 +132,7 @@ internal static class ImGuiDX12
             if (_fence.CompletedValue < _fenceValue)
             {
                 _fence.SetEventOnCompletion(_fenceValue, _fenceEvent.SafeWaitHandle.DangerousGetHandle());
-                _fenceEvent.WaitOne();
+                _fenceEvent.WaitOne(2000);
             }
         }
         catch (Exception ex)

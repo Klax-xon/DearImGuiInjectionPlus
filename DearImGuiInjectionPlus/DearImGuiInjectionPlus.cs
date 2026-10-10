@@ -230,7 +230,9 @@ public static class DearImGuiInjectionPlus
 
         if (Initialized)
         {
-            DisposeImplementationFromRendererKind(RendererFinder.RendererFinder.RendererKind);
+            var kind = _activeRendererKind != RendererKind.None ? _activeRendererKind : RendererFinder.RendererFinder.RendererKind;
+            DisposeImplementationFromRendererKind(kind);
+            _activeRendererKind = RendererKind.None;
 
             lock (_renderLock)
             {
@@ -254,26 +256,52 @@ public static class DearImGuiInjectionPlus
 
             if (ImGui.GetIO().NativePtr != null && ImGui.GetIO().NativePtr->IniFilename != null)
             {
-                Marshal.FreeHGlobal((IntPtr)ImGui.GetIO().NativePtr->IniFilename);
+                var iniPtr = (IntPtr)ImGui.GetIO().NativePtr->IniFilename;
+                try
+                {
+                    if (!string.IsNullOrEmpty(ImGuiIniConfigPath))
+                    {
+                        ImGui.SaveIniSettingsToDisk(ImGuiIniConfigPath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning($"[DearImGuiInjectionPlus] Error saving ini settings: {ex.Message}");
+                }
+
+                ImGui.GetIO().NativePtr->IniFilename = null;
+
+                if (Context != IntPtr.Zero)
+                {
+                    ImGui.DestroyContext(Context);
+                    Context = IntPtr.Zero;
+                }
+
+                Marshal.FreeHGlobal(iniPtr);
+            }
+            else
+            {
+                if (Context != IntPtr.Zero)
+                {
+                    ImGui.DestroyContext(Context);
+                    Context = IntPtr.Zero;
+                }
             }
             IO = null;
-
-            if (Context != IntPtr.Zero)
-            {
-                ImGui.DestroyContext(Context);
-                Context = IntPtr.Zero;
-            }
 
             Initialized = false;
         }
     }
 
     private static bool _implementationInitialized = false;
+    private static RendererKind _activeRendererKind = RendererKind.None;
 
     internal static void InitImplementationFromRendererKind(RendererKind rendererKind, IntPtr swapChainPtr = default)
     {
         if (_implementationInitialized)
             return;
+
+        _activeRendererKind = rendererKind;
 
         switch (rendererKind)
         {

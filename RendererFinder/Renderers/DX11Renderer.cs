@@ -268,7 +268,17 @@ public class DX11Renderer : IRenderer
         _isInsidePresent = true;
         try
         {
-            HandlePresent(self, syncInterval, flags);
+            if (FrameGate.TryEnter())
+            {
+                try
+                {
+                    HandlePresent(self, syncInterval, flags);
+                }
+                finally
+                {
+                    FrameGate.Exit();
+                }
+            }
             return _swapChainPresentHook.OriginalFunction(self, syncInterval, flags);
         }
         finally
@@ -292,7 +302,17 @@ public class DX11Renderer : IRenderer
         _isInsidePresent = true;
         try
         {
-            HandlePresent(self, syncInterval, flags);
+            if (FrameGate.TryEnter())
+            {
+                try
+                {
+                    HandlePresent(self, syncInterval, flags);
+                }
+                finally
+                {
+                    FrameGate.Exit();
+                }
+            }
             return _swapChainPresent1Hook.OriginalFunction(self, syncInterval, flags, presentParameters);
         }
         finally
