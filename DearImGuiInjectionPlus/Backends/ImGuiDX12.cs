@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using DearImGuiInjectionPlus.Windows;
 using ImGuiNET;
 using SharpDX.Direct3D12;
@@ -37,6 +38,7 @@ internal static class ImGuiDX12
         {
             try
             {
+                Marshal.AddRef(swapChainPtr);
                 using var tempSc = new SwapChain(swapChainPtr);
                 windowHandle = tempSc.Description.OutputHandle;
             }

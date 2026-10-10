@@ -103,18 +103,35 @@ internal static class ImGuiDX11
         ImGuiDX11Impl.NewFrame();
         DearImGuiInjectionPlus.NewFrame();
 
-        using (var backBuffer = swapChain.GetBackBuffer<Texture2D>(0))
-        using (var rtv = new RenderTargetView(_device, backBuffer))
+        var drawData = ImGui.GetDrawData();
+        if (drawData.NativePtr != null)
         {
-            _deviceContext.OutputMerger.SetRenderTargets(rtv);
-
-            var drawData = ImGui.GetDrawData();
-            if (drawData.NativePtr != null)
+            using (var old = ImGuiDX11Impl.BackupRenderState(_deviceContext))
             {
-                ImGuiDX11Impl.RenderDrawData(drawData.NativePtr);
-            }
+                Texture2D backBuffer = null;
+                RenderTargetView rtv = null;
+                try
+                {
+                    backBuffer = swapChain.GetBackBuffer<Texture2D>(0);
+                    rtv = new RenderTargetView(_device, backBuffer);
 
-            _deviceContext.OutputMerger.SetRenderTargets((RenderTargetView)null);
+                    _deviceContext.OutputMerger.SetRenderTargets(rtv);
+
+                    ImGuiDX11Impl.RenderDrawData(drawData.NativePtr);
+                }
+                finally
+                {
+                    try
+                    {
+                        ImGuiDX11Impl.RestoreRenderState(_deviceContext, old);
+                    }
+                    finally
+                    {
+                        rtv?.Dispose();
+                        backBuffer?.Dispose();
+                    }
+                }
+            }
         }
     }
 

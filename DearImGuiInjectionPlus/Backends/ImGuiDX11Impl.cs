@@ -189,8 +189,6 @@ public static class ImGuiDX11Impl
 
         ctx.UnmapSubresource(_vertexConstantBuffer, 0);
 
-        var old = BackupRenderState(ctx);
-
         ImGui_ImplDX11_SetupRenderState(draw_data, ctx.NativePointer);
 
         // Render command lists
@@ -234,91 +232,104 @@ public static class ImGuiDX11Impl
             global_idx_offset += cmd_list->IdxBuffer.Size;
             global_vtx_offset += cmd_list->VtxBuffer.Size;
         }
-
-        RestoreRenderState(ctx, old);
     }
 
-    private static StateBackup BackupRenderState(DeviceContext ctx)
+    internal static StateBackup BackupRenderState(DeviceContext ctx)
     {
         const int D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE = 16;
 
         var backup = new StateBackup
         {
-            ScissorRects = new Rectangle[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE],
-            Viewports = new RawViewportF[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE],
-            VertexBuffers = new Buffer[InputAssemblerStage.VertexInputResourceSlotCount],
-            VertexBufferStrides = new int[InputAssemblerStage.VertexInputResourceSlotCount],
-            VertexBufferOffsets = new int[InputAssemblerStage.VertexInputResourceSlotCount],
-
             // IA
-            InputLayout = ctx.InputAssembler.InputLayout
+            InputLayout = ctx.InputAssembler.InputLayout,
+            PrimitiveTopology = ctx.InputAssembler.PrimitiveTopology,
+            VertexBuffers = new Buffer[1],
+            VertexBufferStrides = new int[1],
+            VertexBufferOffsets = new int[1],
+
+            // RS - Preallocate to avoid SharpDX parameterless GetScissorRectangles IndexOutOfRangeException when count is 0
+            ScissorRects = new Rectangle[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE],
+            Viewports = new RawViewportF[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE]
         };
         ctx.InputAssembler.GetIndexBuffer(out backup.IndexBuffer, out backup.IndexBufferFormat, out backup.IndexBufferOffset);
-        backup.PrimitiveTopology = ctx.InputAssembler.PrimitiveTopology;
-        ctx.InputAssembler.GetVertexBuffers(0, InputAssemblerStage.VertexInputResourceSlotCount, backup.VertexBuffers, backup.VertexBufferStrides, backup.VertexBufferOffsets);
+        ctx.InputAssembler.GetVertexBuffers(0, 1, backup.VertexBuffers, backup.VertexBufferStrides, backup.VertexBufferOffsets);
 
         // RS
         backup.RS = ctx.Rasterizer.State;
         ctx.Rasterizer.GetScissorRectangles<Rectangle>(backup.ScissorRects);
         ctx.Rasterizer.GetViewports<RawViewportF>(backup.Viewports);
 
+        int scissorCount = 0;
+        while (scissorCount < D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE &&
+               (backup.ScissorRects[scissorCount].Width > 0 || backup.ScissorRects[scissorCount].Height > 0))
+        {
+            scissorCount++;
+        }
+        backup.ScissorRectsCount = scissorCount;
+
+        int viewportCount = 0;
+        while (viewportCount < D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE &&
+               backup.Viewports[viewportCount].Width > 0.0f && backup.Viewports[viewportCount].Height > 0.0f)
+        {
+            viewportCount++;
+        }
+        backup.ViewportsCount = viewportCount;
+
         // OM
         backup.BlendState = ctx.OutputMerger.GetBlendState(out backup.BlendFactor, out backup.SampleMask);
         backup.DepthStencilState = ctx.OutputMerger.GetDepthStencilState(out backup.DepthStencilRef);
         backup.RenderTargetViews = ctx.OutputMerger.GetRenderTargets(OutputMergerStage.SimultaneousRenderTargetCount, out backup.DepthStencilView);
 
-        // VS
+        // VS (slot 0 constant buffer only)
         backup.VS = ctx.VertexShader.Get();
-        backup.VSSamplers = ctx.VertexShader.GetSamplers(0, CommonShaderStage.SamplerSlotCount);
-        backup.VSConstantBuffers = ctx.VertexShader.GetConstantBuffers(0, CommonShaderStage.ConstantBufferApiSlotCount);
-        backup.VSResourceViews = ctx.VertexShader.GetShaderResources(0, CommonShaderStage.InputResourceSlotCount);
+        backup.VSConstantBuffers = ctx.VertexShader.GetConstantBuffers(0, 1);
 
-        // HS
-        backup.HS = ctx.HullShader.Get();
-        backup.HSSamplers = ctx.HullShader.GetSamplers(0, CommonShaderStage.SamplerSlotCount);
-        backup.HSConstantBuffers = ctx.HullShader.GetConstantBuffers(0, CommonShaderStage.ConstantBufferApiSlotCount);
-        backup.HSResourceViews = ctx.HullShader.GetShaderResources(0, CommonShaderStage.InputResourceSlotCount);
-
-        // DS
-        backup.DS = ctx.DomainShader.Get();
-        backup.DSSamplers = ctx.DomainShader.GetSamplers(0, CommonShaderStage.SamplerSlotCount);
-        backup.DSConstantBuffers = ctx.DomainShader.GetConstantBuffers(0, CommonShaderStage.ConstantBufferApiSlotCount);
-        backup.DSResourceViews = ctx.DomainShader.GetShaderResources(0, CommonShaderStage.InputResourceSlotCount);
-
-        // GS
+        // GS, HS, DS, CS (shader instances only)
         backup.GS = ctx.GeometryShader.Get();
-        backup.GSSamplers = ctx.GeometryShader.GetSamplers(0, CommonShaderStage.SamplerSlotCount);
-        backup.GSConstantBuffers = ctx.GeometryShader.GetConstantBuffers(0, CommonShaderStage.ConstantBufferApiSlotCount);
-        backup.GSResourceViews = ctx.GeometryShader.GetShaderResources(0, CommonShaderStage.InputResourceSlotCount);
-
-        // PS
-        backup.PS = ctx.PixelShader.Get();
-        backup.PSSamplers = ctx.PixelShader.GetSamplers(0, CommonShaderStage.SamplerSlotCount);
-        backup.PSConstantBuffers = ctx.PixelShader.GetConstantBuffers(0, CommonShaderStage.ConstantBufferApiSlotCount);
-        backup.PSResourceViews = ctx.PixelShader.GetShaderResources(0, CommonShaderStage.InputResourceSlotCount);
-
-        // CS
+        backup.HS = ctx.HullShader.Get();
+        backup.DS = ctx.DomainShader.Get();
         backup.CS = ctx.ComputeShader.Get();
-        backup.CSSamplers = ctx.ComputeShader.GetSamplers(0, CommonShaderStage.SamplerSlotCount);
-        backup.CSConstantBuffers = ctx.ComputeShader.GetConstantBuffers(0, CommonShaderStage.ConstantBufferApiSlotCount);
-        backup.CSResourceViews = ctx.ComputeShader.GetShaderResources(0, CommonShaderStage.InputResourceSlotCount);
-        backup.CSUAVs = ctx.ComputeShader.GetUnorderedAccessViews(0, ComputeShaderStage.UnorderedAccessViewSlotCount);   // should be register count and not slot, but the value is correct
+
+        // PS (slot 0 sampler and slot 0 SRV only)
+        backup.PS = ctx.PixelShader.Get();
+        backup.PSSamplers = ctx.PixelShader.GetSamplers(0, 1);
+        backup.PSResourceViews = ctx.PixelShader.GetShaderResources(0, 1);
 
         return backup;
     }
 
-    private static void RestoreRenderState(DeviceContext ctx, StateBackup old)
+    internal static void RestoreRenderState(DeviceContext ctx, StateBackup old)
     {
         // IA
         ctx.InputAssembler.InputLayout = old.InputLayout;
         ctx.InputAssembler.SetIndexBuffer(old.IndexBuffer, old.IndexBufferFormat, old.IndexBufferOffset);
         ctx.InputAssembler.PrimitiveTopology = old.PrimitiveTopology;
-        ctx.InputAssembler.SetVertexBuffers(0, old.VertexBuffers, old.VertexBufferStrides, old.VertexBufferOffsets);
+        if (old.VertexBuffers != null)
+        {
+            ctx.InputAssembler.SetVertexBuffers(0, old.VertexBuffers, old.VertexBufferStrides, old.VertexBufferOffsets);
+        }
 
         // RS
         ctx.Rasterizer.State = old.RS;
-        ctx.Rasterizer.SetScissorRectangles(old.ScissorRects);
-        ctx.Rasterizer.SetViewports(old.Viewports, old.Viewports.Length);
+        if (old.ScissorRectsCount > 0)
+        {
+            var rects = new Rectangle[old.ScissorRectsCount];
+            Array.Copy(old.ScissorRects, rects, old.ScissorRectsCount);
+            ctx.Rasterizer.SetScissorRectangles(rects);
+        }
+        else
+        {
+            ctx.Rasterizer.SetScissorRectangles((Rectangle[])null);
+        }
+
+        if (old.ViewportsCount > 0)
+        {
+            ctx.Rasterizer.SetViewports(old.Viewports, old.ViewportsCount);
+        }
+        else if (old.Viewports != null && old.Viewports.Length > 0)
+        {
+            ctx.Rasterizer.SetViewports(old.Viewports, old.Viewports.Length);
+        }
 
         // OM
         ctx.OutputMerger.SetBlendState(old.BlendState, old.BlendFactor, old.SampleMask);
@@ -327,43 +338,30 @@ public static class ImGuiDX11Impl
 
         // VS
         ctx.VertexShader.Set(old.VS);
-        ctx.VertexShader.SetSamplers(0, old.VSSamplers);
-        ctx.VertexShader.SetConstantBuffers(0, old.VSConstantBuffers);
-        ctx.VertexShader.SetShaderResources(0, old.VSResourceViews);
+        if (old.VSConstantBuffers != null)
+        {
+            ctx.VertexShader.SetConstantBuffers(0, old.VSConstantBuffers);
+        }
 
-        // HS
-        ctx.HullShader.Set(old.HS);
-        ctx.HullShader.SetSamplers(0, old.HSSamplers);
-        ctx.HullShader.SetConstantBuffers(0, old.HSConstantBuffers);
-        ctx.HullShader.SetShaderResources(0, old.HSResourceViews);
-
-        // DS
-        ctx.DomainShader.Set(old.DS);
-        ctx.DomainShader.SetSamplers(0, old.DSSamplers);
-        ctx.DomainShader.SetConstantBuffers(0, old.DSConstantBuffers);
-        ctx.DomainShader.SetShaderResources(0, old.DSResourceViews);
-
-        // GS
+        // GS, HS, DS, CS
         ctx.GeometryShader.Set(old.GS);
-        ctx.GeometryShader.SetSamplers(0, old.GSSamplers);
-        ctx.GeometryShader.SetConstantBuffers(0, old.GSConstantBuffers);
-        ctx.GeometryShader.SetShaderResources(0, old.GSResourceViews);
+        ctx.HullShader.Set(old.HS);
+        ctx.DomainShader.Set(old.DS);
+        ctx.ComputeShader.Set(old.CS);
 
         // PS
         ctx.PixelShader.Set(old.PS);
-        ctx.PixelShader.SetSamplers(0, old.PSSamplers);
-        ctx.PixelShader.SetConstantBuffers(0, old.PSConstantBuffers);
-        ctx.PixelShader.SetShaderResources(0, old.PSResourceViews);
-
-        // CS
-        ctx.ComputeShader.Set(old.CS);
-        ctx.ComputeShader.SetSamplers(0, old.CSSamplers);
-        ctx.ComputeShader.SetConstantBuffers(0, old.CSConstantBuffers);
-        ctx.ComputeShader.SetShaderResources(0, old.CSResourceViews);
-        ctx.ComputeShader.SetUnorderedAccessViews(0, old.CSUAVs);
+        if (old.PSSamplers != null)
+        {
+            ctx.PixelShader.SetSamplers(0, old.PSSamplers);
+        }
+        if (old.PSResourceViews != null)
+        {
+            ctx.PixelShader.SetShaderResources(0, old.PSResourceViews);
+        }
     }
 
-    private class StateBackup
+    internal sealed class StateBackup : IDisposable
     {
         // IA
         public InputLayout InputLayout;
@@ -378,7 +376,9 @@ public static class ImGuiDX11Impl
         // RS
         public RasterizerState RS;
         public Rectangle[] ScissorRects;
+        public int ScissorRectsCount;
         public RawViewportF[] Viewports;
+        public int ViewportsCount;
 
         // OM
         public BlendState BlendState;
@@ -389,41 +389,95 @@ public static class ImGuiDX11Impl
         public DepthStencilView DepthStencilView;
         public RenderTargetView[] RenderTargetViews;
 
-        // VS
+        // Shaders & Resources
         public VertexShader VS;
         public Buffer[] VSConstantBuffers;
-        public SamplerState[] VSSamplers;
-        public ShaderResourceView[] VSResourceViews;
 
-        // HS
-        public HullShader HS;
-        public Buffer[] HSConstantBuffers;
-        public SamplerState[] HSSamplers;
-        public ShaderResourceView[] HSResourceViews;
-
-        // DS
-        public DomainShader DS;
-        public Buffer[] DSConstantBuffers;
-        public SamplerState[] DSSamplers;
-        public ShaderResourceView[] DSResourceViews;
-
-        // GS
         public GeometryShader GS;
-        public Buffer[] GSConstantBuffers;
-        public SamplerState[] GSSamplers;
-        public ShaderResourceView[] GSResourceViews;
+        public HullShader HS;
+        public DomainShader DS;
+        public ComputeShader CS;
 
-        // PS
         public PixelShader PS;
-        public Buffer[] PSConstantBuffers;
         public SamplerState[] PSSamplers;
         public ShaderResourceView[] PSResourceViews;
 
-        public ComputeShader CS;
-        public Buffer[] CSConstantBuffers;
-        public SamplerState[] CSSamplers;
-        public ShaderResourceView[] CSResourceViews;
-        public UnorderedAccessView[] CSUAVs;
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+
+            InputLayout?.Dispose();
+            InputLayout = null;
+
+            IndexBuffer?.Dispose();
+            IndexBuffer = null;
+
+            DisposeAll(VertexBuffers);
+            VertexBuffers = null;
+
+            RS?.Dispose();
+            RS = null;
+
+            BlendState?.Dispose();
+            BlendState = null;
+
+            DepthStencilState?.Dispose();
+            DepthStencilState = null;
+
+            DepthStencilView?.Dispose();
+            DepthStencilView = null;
+
+            DisposeAll(RenderTargetViews);
+            RenderTargetViews = null;
+
+            VS?.Dispose();
+            VS = null;
+
+            DisposeAll(VSConstantBuffers);
+            VSConstantBuffers = null;
+
+            GS?.Dispose();
+            GS = null;
+
+            HS?.Dispose();
+            HS = null;
+
+            DS?.Dispose();
+            DS = null;
+
+            CS?.Dispose();
+            CS = null;
+
+            PS?.Dispose();
+            PS = null;
+
+            DisposeAll(PSSamplers);
+            PSSamplers = null;
+
+            DisposeAll(PSResourceViews);
+            PSResourceViews = null;
+        }
+
+        private static void DisposeAll<T>(T[] a) where T : class, IDisposable
+        {
+            if (a == null) return;
+            for (int i = 0; i < a.Length; i++)
+            {
+                try
+                {
+                    a[i]?.Dispose();
+                }
+                catch
+                {
+                    // Suppress exceptions during dispose to ensure remaining items are disposed
+                }
+                a[i] = null;
+            }
+        }
     }
 
     public static unsafe void CreateFontsTexture()
