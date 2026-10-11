@@ -97,24 +97,30 @@ public static class RendererFinder
             int hr = getDevice(swapChainPtr, ref d3d12QueueGuid, out IntPtr commandQueuePtr);
             if (hr == 0 && commandQueuePtr != IntPtr.Zero)
             {
+                SharpDX.Direct3D12.CommandQueue q = null;
                 try
                 {
-                    Marshal.AddRef(commandQueuePtr);
-                    using var q = new SharpDX.Direct3D12.CommandQueue(commandQueuePtr);
+                    q = new SharpDX.Direct3D12.CommandQueue(commandQueuePtr);
                     if (q.Description.Type == SharpDX.Direct3D12.CommandListType.Direct)
                     {
                         Log.Info($"[RendererFinder] Acquired Direct ID3D12CommandQueue directly from swapchain: {commandQueuePtr:X8}");
+                        GC.SuppressFinalize(q);
+                        DX12Renderer.CapturedCommandQueue = commandQueuePtr;
                         return commandQueuePtr;
                     }
                     else
                     {
                         Log.Warning($"[RendererFinder] Swapchain returned non-direct command queue: {commandQueuePtr:X8} (Type: {q.Description.Type})");
+                        q.Dispose();
                     }
                 }
                 catch (Exception ex)
                 {
                     Log.Warning($"[RendererFinder] Could not verify swapchain command queue type: {ex.Message}");
-                    return commandQueuePtr;
+                    if (q != null)
+                        q.Dispose();
+                    else
+                        Marshal.Release(commandQueuePtr);
                 }
             }
 
@@ -132,24 +138,30 @@ public static class RendererFinder
                     int qiHr = qi(pUnknown, ref d3d12QueueGuid, out IntPtr queueFromQi);
                     if (qiHr == 0 && queueFromQi != IntPtr.Zero)
                     {
+                        SharpDX.Direct3D12.CommandQueue q = null;
                         try
                         {
-                            Marshal.AddRef(queueFromQi);
-                            using var q = new SharpDX.Direct3D12.CommandQueue(queueFromQi);
+                            q = new SharpDX.Direct3D12.CommandQueue(queueFromQi);
                             if (q.Description.Type == SharpDX.Direct3D12.CommandListType.Direct)
                             {
                                 Log.Info($"[RendererFinder] Acquired Direct ID3D12CommandQueue via QI from swapchain: {queueFromQi:X8}");
+                                GC.SuppressFinalize(q);
+                                DX12Renderer.CapturedCommandQueue = queueFromQi;
                                 return queueFromQi;
                             }
                             else
                             {
                                 Log.Warning($"[RendererFinder] QI returned non-direct command queue: {queueFromQi:X8} (Type: {q.Description.Type})");
+                                q.Dispose();
                             }
                         }
                         catch (Exception ex)
                         {
                             Log.Warning($"[RendererFinder] Could not verify QI command queue type: {ex.Message}");
-                            return queueFromQi;
+                            if (q != null)
+                                q.Dispose();
+                            else
+                                Marshal.Release(queueFromQi);
                         }
                     }
                 }

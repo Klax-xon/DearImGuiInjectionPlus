@@ -179,8 +179,7 @@ public class DX12Renderer : IRenderer
         {
             try
             {
-                System.Runtime.InteropServices.Marshal.AddRef(self);
-                using var checkQueue = new CommandQueue(self);
+                var checkQueue = new CommandQueue(self);
                 var queueType = checkQueue.Description.Type;
                 if (queueType == CommandListType.Direct)
                 {
@@ -204,15 +203,11 @@ public class DX12Renderer : IRenderer
                 var commandQueue = new CommandQueue(self);
                 try
                 {
-                    if (!action.Invoke(commandQueue, (uint)numCommandLists, ppCommandLists))
-                    {
-                        commandQueue.Dispose();
-                    }
+                    action.Invoke(commandQueue, (uint)numCommandLists, ppCommandLists);
                 }
                 catch (Exception e)
                 {
                     Log.Error(e);
-                    commandQueue.Dispose();
                 }
             }
 

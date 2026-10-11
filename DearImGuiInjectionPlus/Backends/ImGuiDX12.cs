@@ -100,6 +100,7 @@ internal static class ImGuiDX12
         try { _shaderDescriptorHeap?.Dispose(); } catch { }
         try { _fence?.Dispose(); } catch { }
         try { _fenceEvent?.Dispose(); } catch { }
+        try { _commandQueue?.Dispose(); } catch { }
         if (_frameContexts != null)
         {
             for (int i = 0; i < _frameContexts.Length; i++)
@@ -151,7 +152,8 @@ internal static class ImGuiDX12
         if (commandQueue != null && commandQueue.Description.Type == CommandListType.Direct)
         {
             Log.Info($"[ImGuiDX12] Successfully captured Direct CommandQueue: {commandQueue.NativePointer:X8}");
-            _commandQueue = commandQueue;
+            System.Runtime.InteropServices.Marshal.AddRef(commandQueue.NativePointer);
+            _commandQueue = new CommandQueue(commandQueue.NativePointer);
 
             // Trigger initialization immediately if swapchain is already known!
             TryInitImGuiDX12();

@@ -176,8 +176,6 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
     {
         Log.Info("[DearImGuiInjectionPlus] Engine shutdown initiated...");
         RendererFinder.RendererFinder.IsShuttingDown = true;
-        var isDx12 = RendererFinder.RendererFinder.TargetRendererKind == RendererFinder.Renderers.RendererKind.D3D12
-                  || RendererFinder.RendererFinder.RendererKind == RendererFinder.Renderers.RendererKind.D3D12;
 
         try
         {
@@ -206,10 +204,6 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
         if (!FrameGate.CloseAndDrain(1000))
         {
             Log.Warning("[DearImGuiInjectionPlus] Teardown drain timed out; skipping destruction to avoid use-after-free crash.");
-            if (isDx12)
-            {
-                System.Diagnostics.Process.GetCurrentProcess().Kill();
-            }
             return;
         }
 
@@ -220,14 +214,5 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
         DearImGuiInjectionPlus.Dispose();
 
         Log.Info("[DearImGuiInjectionPlus] Plugin shutdown completed safely.");
-
-        // Clean fast exit for DX12:
-        // Unity 6 with D3D12 Agility SDK crashes during Mono's post-shutdown ComputeBuffer GC sweep.
-        // Since all save data, Steam/EOS, and plugins have finished teardown, terminate the process
-        // cleanly in kernel mode to prevent the driver crash dialog.
-        if (isDx12)
-        {
-            System.Diagnostics.Process.GetCurrentProcess().Kill();
-        }
     }
 }
