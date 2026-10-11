@@ -28,7 +28,7 @@ internal static class InputManager
         if (hWnd == IntPtr.Zero || _windowHandle == hWnd)
             return;
 
-        if (ImGui.GetCurrentContext() == IntPtr.Zero)
+        if (DearImGuiInjectionPlus.Context == IntPtr.Zero)
         {
             Log.Warning("[InputManager] Subclass called before ImGui context was created! Initializing ImGui context first...");
             DearImGuiInjectionPlus.InitImGui();
@@ -117,16 +117,24 @@ internal static class InputManager
             return User32.DefWindowProc(hWnd, msg, wParam, lParam);
         }
 
-        // Swallow all mouse messages (clicks, moves, wheels)
+        // Swallow mouse messages (clicks, moves, wheels) if blocking all inputs or ImGui wants mouse capture
         if (IsMouseMessage(msg))
         {
-            return IntPtr.Zero;
+            if (DearImGuiInjectionPlus.BlockAllInputsWhenOpen || DearImGuiInjectionPlus.WantCaptureMouse)
+            {
+                return IntPtr.Zero;
+            }
+            return User32.CallWindowProc(_originalWndProc, hWnd, msg, wParam, lParam);
         }
 
-        // Swallow all keyboard messages (letters, numbers, modifiers)
+        // Swallow keyboard messages (letters, numbers, modifiers) if blocking all inputs or ImGui wants keyboard capture
         if (IsKeyboardMessage(msg))
         {
-            return IntPtr.Zero;
+            if (DearImGuiInjectionPlus.BlockAllInputsWhenOpen || DearImGuiInjectionPlus.WantCaptureKeyboard)
+            {
+                return IntPtr.Zero;
+            }
+            return User32.CallWindowProc(_originalWndProc, hWnd, msg, wParam, lParam);
         }
 
         // Forward non-input window events (WM_PAINT, WM_SIZE, WM_ACTIVATE, etc.)
@@ -189,15 +197,6 @@ internal static class InputManager
                 }
 
                 User32.ClipCursor(IntPtr.Zero);
-
-                if (_windowHandle != IntPtr.Zero &&
-                    User32.GetCursorPos(out var screenPt) &&
-                    User32.ScreenToClient(_windowHandle, ref screenPt))
-                {
-                    var io = ImGui.GetIO();
-                    io.AddMousePosEvent(screenPt.X, screenPt.Y);
-                    io.WantSetMousePos = false;
-                }
             }
             else
             {

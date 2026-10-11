@@ -31,6 +31,19 @@ public static class DearImGuiInjectionPlus
     /// </summary>
     public static bool IsCursorVisible { get; internal set; }
 
+    private static volatile bool _wantCaptureMouse;
+    private static volatile bool _wantCaptureKeyboard;
+
+    /// <summary>
+    /// True if Dear ImGui wants to capture mouse input (published safely by the render thread after each frame).
+    /// </summary>
+    public static bool WantCaptureMouse => _wantCaptureMouse;
+
+    /// <summary>
+    /// True if Dear ImGui wants to capture keyboard input (published safely by the render thread after each frame).
+    /// </summary>
+    public static bool WantCaptureKeyboard => _wantCaptureKeyboard;
+
     /// <summary>
     /// Key for switching the cursor visibility. Defaults to Insert.
     /// </summary>
@@ -212,6 +225,7 @@ public static class DearImGuiInjectionPlus
         IO.MouseDrawCursor = false;
         IO.ConfigFlags &= ~ImGuiConfigFlags.NavEnableSetMousePos;
         IO.WantSetMousePos = false;
+        IO.ConfigFlags |= ImGuiConfigFlags.NoMouse;
 
         IO.ConfigFlags |= ImGuiConfigFlags.DockingEnable;
 
@@ -253,6 +267,8 @@ public static class DearImGuiInjectionPlus
             }
 
             InputManager.Unsubclass();
+            _wantCaptureMouse = false;
+            _wantCaptureKeyboard = false;
 
             if (ImGui.GetIO().NativePtr != null && ImGui.GetIO().NativePtr->IniFilename != null)
             {
@@ -349,37 +365,25 @@ public static class DearImGuiInjectionPlus
 
     public static void ToggleCursorVisibility() => ToggleCursor();
 
-    internal static unsafe void UpdateCursorVisibility()
+    internal static void UpdateCursorVisibility()
     {
-        if (!Initialized || IO.NativePtr == null)
-            return;
-
-        IO.MouseDrawCursor = false;
-
-        if (IsCursorVisible)
+        float mouseX = 0;
+        float mouseY = 0;
+        if (InputManager.WindowHandle != IntPtr.Zero &&
+            User32.GetCursorPos(out var screenPt) &&
+            User32.ScreenToClient(InputManager.WindowHandle, ref screenPt))
         {
-            IO.ConfigFlags &= ~ImGuiConfigFlags.NoMouse;
-            IO.ConfigFlags &= ~ImGuiConfigFlags.NavEnableSetMousePos;
-            IO.WantSetMousePos = false;
+            mouseX = screenPt.X;
+            mouseY = screenPt.Y;
+        }
 
-            if (InputManager.WindowHandle != IntPtr.Zero &&
-                User32.GetCursorPos(out var screenPt) &&
-                User32.ScreenToClient(InputManager.WindowHandle, ref screenPt))
-            {
-                IO.AddMousePosEvent(screenPt.X, screenPt.Y);
-                IO.WantSetMousePos = false;
-            }
-        }
-        else
-        {
-            IO.ConfigFlags |= ImGuiConfigFlags.NoMouse;
-        }
+        ImGuiWin32Impl.EnqueueCursorVisibility(IsCursorVisible, mouseX, mouseY);
     }
 
     /// <summary>
     /// Executes a single Dear ImGui frame with zero allocations and isolated exception boundaries.
     /// </summary>
-    internal static void NewFrame()
+    internal static unsafe void NewFrame()
     {
         ImGuiWin32Impl.NewFrame();
         ImGui.NewFrame();
@@ -460,5 +464,8 @@ public static class DearImGuiInjectionPlus
 
         ImGui.EndFrame();
         ImGui.Render();
+
+        _wantCaptureMouse = IO.NativePtr != null && IO.WantCaptureMouse;
+        _wantCaptureKeyboard = IO.NativePtr != null && IO.WantCaptureKeyboard;
     }
 }

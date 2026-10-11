@@ -163,7 +163,7 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
             return;
         }
 
-        if (DearImGuiInjectionPlus.IsCursorVisible && DearImGuiInjectionPlus.Initialized && DearImGuiInjectionPlus.IO.WantCaptureMouse)
+        if (DearImGuiInjectionPlus.IsCursorVisible && DearImGuiInjectionPlus.Initialized && DearImGuiInjectionPlus.WantCaptureMouse)
         {
             return;
         }
