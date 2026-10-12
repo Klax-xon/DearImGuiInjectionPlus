@@ -199,18 +199,21 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
         _eventSystemUpdateHook?.Dispose();
         _eventSystemUpdateHook = null;
 
-        // TH-01: Quiesce protocol — drain in-flight render frames before teardown
-        // (a) Close and drain in-flight render frames
+        // LC-02 / TH-01: Invert teardown order for unmanaged safety
+        // 1. Signal the frame gate to drain in-flight rendering frames
         if (!FrameGate.CloseAndDrain(1000))
         {
             Log.Warning("[DearImGuiInjectionPlus] Teardown drain timed out; skipping destruction to avoid use-after-free crash.");
             return;
         }
 
-        // (b) Disable native DXGI hooks (now safe because nothing new enters)
+        // 2. Disable and deactivate all native hooks
         RendererFinder.RendererFinder.Dispose();
 
-        // (c)-(f) Wait on fence (D3D12), release GPU objects, restore WndProc, save config & destroy context
+        // 3. Restore original window procedures
+        InputManager.Unsubclass();
+
+        // 4. Wait for GPU idle & 5. Destroy graphics resources and ImGui context
         DearImGuiInjectionPlus.Dispose();
 
         Log.Info("[DearImGuiInjectionPlus] Plugin shutdown completed safely.");

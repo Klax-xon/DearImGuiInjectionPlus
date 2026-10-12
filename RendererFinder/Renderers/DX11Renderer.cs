@@ -228,7 +228,7 @@ public class DX11Renderer : IRenderer
 
         try
         {
-            if (_swapChainPresentHook != null && _swapChainPresentHook.IsHookActivated)
+            if (_swapChainPresentHook != null && _swapChainPresentHook.IsHookActivated && _swapChainPresentHook.IsHookEnabled)
             {
                 _swapChainPresentHook.Disable();
                 Log.Info("[DX11Renderer] Successfully disabled SwapChainPresentHook.");
@@ -241,7 +241,7 @@ public class DX11Renderer : IRenderer
 
         try
         {
-            if (_swapChainPresent1Hook != null && _swapChainPresent1Hook.IsHookActivated)
+            if (_swapChainPresent1Hook != null && _swapChainPresent1Hook.IsHookActivated && _swapChainPresent1Hook.IsHookEnabled)
             {
                 _swapChainPresent1Hook.Disable();
                 Log.Info("[DX11Renderer] Successfully disabled SwapChainPresent1Hook.");

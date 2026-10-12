@@ -244,6 +244,11 @@ public static class DearImGuiInjectionPlus
 
         if (Initialized)
         {
+            // Restore window procedure before disposing graphics backends/context
+            InputManager.Unsubclass();
+            _wantCaptureMouse = false;
+            _wantCaptureKeyboard = false;
+
             var kind = _activeRendererKind != RendererKind.None ? _activeRendererKind : RendererFinder.RendererFinder.RendererKind;
             DisposeImplementationFromRendererKind(kind);
             _activeRendererKind = RendererKind.None;
@@ -265,10 +270,6 @@ public static class DearImGuiInjectionPlus
                 _registeredTabs.Clear();
                 _tabsSnapshot = Array.Empty<RegisteredTab>();
             }
-
-            InputManager.Unsubclass();
-            _wantCaptureMouse = false;
-            _wantCaptureKeyboard = false;
 
             if (ImGui.GetIO().NativePtr != null && ImGui.GetIO().NativePtr->IniFilename != null)
             {

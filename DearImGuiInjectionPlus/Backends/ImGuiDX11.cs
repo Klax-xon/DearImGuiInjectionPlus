@@ -24,21 +24,54 @@ internal static class ImGuiDX11
         RendererFinder.Renderers.DX11Renderer.OnPresent -= RenderImGui;
         RendererFinder.Renderers.DX11Renderer.OnPresent -= InitImGui;
 
-        InputManager.Unsubclass();
+        WaitForGpuIdle();
 
-        if (DearImGuiInjectionPlus.Initialized && !RendererFinder.RendererFinder.IsShuttingDown)
+        if (DearImGuiInjectionPlus.Initialized)
         {
             Log.Info("[ImGuiDX11] Shutting down DX11 ImGui backend...");
-            ImGuiDX11Impl.Shutdown();
+            try
+            {
+                ImGuiDX11Impl.Shutdown();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[ImGuiDX11] Error during ImGuiDX11Impl.Shutdown: {ex.Message}");
+            }
 
-            _deviceContext?.Dispose();
+            try
+            {
+                _deviceContext?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[ImGuiDX11] Error disposing DeviceContext: {ex.Message}");
+            }
             _deviceContext = null;
 
-            _device?.Dispose();
+            try
+            {
+                _device?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[ImGuiDX11] Error disposing Device: {ex.Message}");
+            }
             _device = null;
         }
 
         _windowHandle = IntPtr.Zero;
+    }
+
+    private static void WaitForGpuIdle()
+    {
+        try
+        {
+            _deviceContext?.Flush();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[ImGuiDX11] Error flushing DX11 device context: {ex.Message}");
+        }
     }
 
     private static unsafe void InitImGui(SwapChain swapChain, uint syncInterval, uint flags)
