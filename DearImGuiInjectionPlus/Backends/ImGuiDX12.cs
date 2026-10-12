@@ -109,6 +109,7 @@ internal static class ImGuiDX12
             }
             _frameContexts = null;
         }
+        try { _device?.Dispose(); } catch { }
 
         _commandList = null;
         _rtvDescriptorHeap = null;
