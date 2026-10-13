@@ -65,7 +65,7 @@ public static class ImGuiDX12Impl
     }
 
     // Functions
-    static unsafe void ImGui_ImplDX12_SetupRenderState(ImDrawData* draw_data, GraphicsCommandList ctx, RenderBuffer fr)
+    static unsafe void ImGui_ImplDX12_SetupRenderState(ImDrawData* draw_data, GraphicsCommandList ctx, Resource vertexBuffer, int vertexBufferSize, Resource indexBuffer, int indexBufferSize)
     {
         VERTEX_CONSTANT_BUFFER_DX12 constant_buffer;
         float L = draw_data->DisplayPos.X;
@@ -107,13 +107,13 @@ public static class ImGuiDX12Impl
         uint stride = (uint)sizeof(ImDrawVert);
         uint offset = 0;
         VertexBufferView vbv;
-        vbv.BufferLocation = fr.VertexBuffer.GPUVirtualAddress + offset;
-        vbv.SizeInBytes = (int)(fr.VertexBufferSize * stride);
+        vbv.BufferLocation = vertexBuffer.GPUVirtualAddress + offset;
+        vbv.SizeInBytes = (int)(vertexBufferSize * stride);
         vbv.StrideInBytes = (int)stride;
         ctx.SetVertexBuffer(0, vbv);
         IndexBufferView ibv;
-        ibv.BufferLocation = fr.IndexBuffer.GPUVirtualAddress;
-        ibv.SizeInBytes = fr.IndexBufferSize * sizeof(ushort); // sizeof(ImDrawIdx)
+        ibv.BufferLocation = indexBuffer.GPUVirtualAddress;
+        ibv.SizeInBytes = indexBufferSize * sizeof(ushort); // sizeof(ImDrawIdx)
         ibv.Format = sizeof(ushort) == 2 ? Format.R16_UInt : Format.R32_UInt; // sizeof(ImDrawIdx)
         ctx.SetIndexBuffer(ibv);
         ctx.PrimitiveTopology = PrimitiveTopology.TriangleList;
@@ -125,7 +125,29 @@ public static class ImGuiDX12Impl
         ctx.BlendFactor = _blendFactor;
     }
 
+    static unsafe void ImGui_ImplDX12_SetupRenderState(ImDrawData* draw_data, GraphicsCommandList ctx, RenderBuffer fr)
+    {
+        if (fr == null) return;
+        ImGui_ImplDX12_SetupRenderState(draw_data, ctx, fr.VertexBuffer, fr.VertexBufferSize, fr.IndexBuffer, fr.IndexBufferSize);
+    }
+
     private unsafe delegate void ImDrawUserCallBack(ImDrawList* a, ImDrawCmd* b);
+
+    internal static unsafe void RenderDrawData(ImDrawData* draw_data, GraphicsCommandList ctx, ImGuiDX12.FrameContext fr)
+    {
+        if (fr == null)
+            return;
+
+        RenderDrawBuffers(draw_data, ctx, ref fr.VertexBuffer, ref fr.VertexBufferSize, ref fr.IndexBuffer, ref fr.IndexBufferSize);
+    }
+
+    public static unsafe void RenderDrawData(ImDrawData* draw_data, GraphicsCommandList ctx, RenderBuffer fr)
+    {
+        if (fr == null)
+            return;
+
+        RenderDrawBuffers(draw_data, ctx, ref fr.VertexBuffer, ref fr.VertexBufferSize, ref fr.IndexBuffer, ref fr.IndexBufferSize);
+    }
 
     // Render function
     public static unsafe void RenderDrawData(ImDrawData* draw_data, GraphicsCommandList ctx)
@@ -134,17 +156,38 @@ public static class ImGuiDX12Impl
         if (draw_data->DisplaySize.X <= 0.0f || draw_data->DisplaySize.Y <= 0.0f)
             return;
 
-        // FIXME: I'm assuming that this only gets called once per frame!
-        // If not, we can't just re-allocate the IB or VB, we'll have to do a proper allocator.
+        if (numFramesInFlight == 0 || pFrameResources == null || pFrameResources.Length == 0)
+            return;
+
         frameIndex = frameIndex + 1;
         var fr = pFrameResources[frameIndex % numFramesInFlight];
+        if (fr == null)
+            return;
+
+        RenderDrawData(draw_data, ctx, fr);
+    }
+
+    private static unsafe void RenderDrawBuffers(
+        ImDrawData* draw_data,
+        GraphicsCommandList ctx,
+        ref Resource vertexBuffer,
+        ref int vertexBufferSize,
+        ref Resource indexBuffer,
+        ref int indexBufferSize)
+    {
+        // Avoid rendering when minimized
+        if (draw_data->DisplaySize.X <= 0.0f || draw_data->DisplaySize.Y <= 0.0f)
+            return;
+
+        if (_device == null)
+            return;
 
         // Create and grow vertex/index buffers if needed
-        if (fr.VertexBuffer == null || fr.VertexBufferSize < draw_data->TotalVtxCount)
+        if (vertexBuffer == null || vertexBufferSize < draw_data->TotalVtxCount)
         {
-            fr.VertexBuffer?.Dispose();
-            fr.VertexBuffer = null;
-            fr.VertexBufferSize = draw_data->TotalVtxCount + 5000;
+            vertexBuffer?.Dispose();
+            vertexBuffer = null;
+            vertexBufferSize = draw_data->TotalVtxCount + 5000;
 
             HeapProperties props = new();
             props.Type = HeapType.Upload;
@@ -152,7 +195,7 @@ public static class ImGuiDX12Impl
             props.MemoryPoolPreference = MemoryPool.Unknown;
             ResourceDescription desc = new();
             desc.Dimension = ResourceDimension.Buffer;
-            desc.Width = fr.VertexBufferSize * sizeof(ImDrawVert);
+            desc.Width = vertexBufferSize * sizeof(ImDrawVert);
             desc.Height = 1;
             desc.DepthOrArraySize = 1;
             desc.MipLevels = 1;
@@ -161,20 +204,22 @@ public static class ImGuiDX12Impl
             desc.Layout = TextureLayout.RowMajor;
             desc.Flags = ResourceFlags.None;
 
-            fr.VertexBuffer = _device.CreateCommittedResource(props, HeapFlags.None, desc, ResourceStates.GenericRead);
+            vertexBuffer = _device.CreateCommittedResource(props, HeapFlags.None, desc, ResourceStates.GenericRead);
         }
 
-        if (fr.IndexBuffer == null || fr.IndexBufferSize < draw_data->TotalIdxCount)
+        if (indexBuffer == null || indexBufferSize < draw_data->TotalIdxCount)
         {
-            fr.IndexBuffer?.Dispose(); fr.IndexBuffer = null;
-            fr.IndexBufferSize = draw_data->TotalIdxCount + 10000;
+            indexBuffer?.Dispose();
+            indexBuffer = null;
+            indexBufferSize = draw_data->TotalIdxCount + 10000;
+
             HeapProperties props = new();
             props.Type = HeapType.Upload;
             props.CPUPageProperty = CpuPageProperty.Unknown;
             props.MemoryPoolPreference = MemoryPool.Unknown;
             ResourceDescription desc = new();
             desc.Dimension = ResourceDimension.Buffer;
-            desc.Width = fr.IndexBufferSize * sizeof(ushort); //sizeof(ImDrawIdx)
+            desc.Width = indexBufferSize * sizeof(ushort); //sizeof(ImDrawIdx)
             desc.Height = 1;
             desc.DepthOrArraySize = 1;
             desc.MipLevels = 1;
@@ -183,14 +228,14 @@ public static class ImGuiDX12Impl
             desc.Layout = TextureLayout.RowMajor;
             desc.Flags = ResourceFlags.None;
 
-            fr.IndexBuffer = _device.CreateCommittedResource(props, HeapFlags.None, desc, ResourceStates.GenericRead);
+            indexBuffer = _device.CreateCommittedResource(props, HeapFlags.None, desc, ResourceStates.GenericRead);
         }
 
         // Upload vertex/index data into a single contiguous GPU buffer
         SharpDX.Direct3D12.Range range = new();
 
-        var vtx_resource = fr.VertexBuffer.Map(0, range);
-        var idx_resource = fr.IndexBuffer.Map(0, range);
+        var vtx_resource = vertexBuffer.Map(0, range);
+        var idx_resource = indexBuffer.Map(0, range);
 
         ImDrawVert* vtx_dst = (ImDrawVert*)vtx_resource;
         ushort* idx_dst = (ushort*)idx_resource;
@@ -207,11 +252,11 @@ public static class ImGuiDX12Impl
             vtx_dst += cmd_list->VtxBuffer.Size;
             idx_dst += cmd_list->IdxBuffer.Size;
         }
-        fr.VertexBuffer.Unmap(0, range);
-        fr.IndexBuffer.Unmap(0, range);
+        vertexBuffer.Unmap(0, range);
+        indexBuffer.Unmap(0, range);
 
         // Setup desired DX state
-        ImGui_ImplDX12_SetupRenderState(draw_data, ctx, fr);
+        ImGui_ImplDX12_SetupRenderState(draw_data, ctx, vertexBuffer, vertexBufferSize, indexBuffer, indexBufferSize);
 
         // Render command lists
         // (Because we merged all buffers into a single one, we maintain our own offset into them)
@@ -231,7 +276,7 @@ public static class ImGuiDX12Impl
                     // User callback, registered via ImDrawList::AddCallback()
                     // (ImDrawCallback_ResetRenderState is a special callback value used by the user to request the renderer to reset render state.)
                     if (pcmd.UserCallback == new IntPtr(-1))
-                        ImGui_ImplDX12_SetupRenderState(draw_data, ctx, fr);
+                        ImGui_ImplDX12_SetupRenderState(draw_data, ctx, vertexBuffer, vertexBufferSize, indexBuffer, indexBufferSize);
                     else
                         userCallback(cmd_list, &pcmd);
                 }
@@ -639,6 +684,8 @@ public static class ImGuiDX12Impl
                 fr.VertexBuffer?.Dispose();
                 fr.VertexBuffer = null;
             }
+            pFrameResources = Array.Empty<RenderBuffer>();
+            numFramesInFlight = 0;
         }
     }
 
@@ -689,6 +736,7 @@ public static class ImGuiDX12Impl
         // Clean up windows and device objects
         InvalidateDeviceObjects();
         pFrameResources = null;
+        numFramesInFlight = 0;
 
         if (_renderNamePtr != IntPtr.Zero)
         {
@@ -729,6 +777,7 @@ public static class ImGuiDX12Impl
                 }
             }
             pFrameResources = null;
+            numFramesInFlight = 0;
         }
 
         if (_renderNamePtr != IntPtr.Zero)

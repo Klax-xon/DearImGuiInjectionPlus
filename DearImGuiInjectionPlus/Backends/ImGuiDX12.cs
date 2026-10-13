@@ -19,6 +19,10 @@ internal static class ImGuiDX12
     {
         internal CommandAllocator CommandAllocator;
         internal long FenceValue;
+        internal Resource VertexBuffer;
+        internal Resource IndexBuffer;
+        internal int VertexBufferSize;
+        internal int IndexBufferSize;
     }
     private static FrameContext[] _frameContexts;
     private static GraphicsCommandList _commandList;
@@ -106,6 +110,8 @@ internal static class ImGuiDX12
             for (int i = 0; i < _frameContexts.Length; i++)
             {
                 try { _frameContexts[i]?.CommandAllocator?.Dispose(); } catch { }
+                try { _frameContexts[i]?.VertexBuffer?.Dispose(); } catch { }
+                try { _frameContexts[i]?.IndexBuffer?.Dispose(); } catch { }
             }
             _frameContexts = null;
         }
@@ -427,7 +433,7 @@ internal static class ImGuiDX12
                     _commandList.SetDescriptorHeaps(_shaderDescriptorHeap);
 
                     var drawData = ImGui.GetDrawData();
-                    ImGuiDX12Impl.RenderDrawData(drawData, _commandList);
+                    ImGuiDX12Impl.RenderDrawData(drawData, _commandList, currentFrameContext);
                     if (verboseFrame)
                     {
                         Log.Info($"[ImGuiDX12] Frame {frame}: ImGuiDX12Impl.RenderDrawData() completed.");
