@@ -1,7 +1,9 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Threading;
 using DearImGuiInjectionPlus.Windows;
 using ImGuiNET;
 using SharpDX;
@@ -349,51 +351,66 @@ public static class ImGuiDX12Impl
                 Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES
             };
 
-            var fence = _device.CreateFence(0, FenceFlags.None);
+            Fence fence = null;
+            CommandQueue cmdQueue = null;
+            CommandAllocator cmdAlloc = null;
+            GraphicsCommandList cmdList = null;
 
-            var @event = Kernel32.CreateEvent(IntPtr.Zero, false, false, null);
-            if (@event == IntPtr.Zero)
+            try
             {
-                Log.Error("Kernel32.CreateEvent failed.");
+                fence = _device.CreateFence(0, FenceFlags.None);
+
+                CommandQueueDescription queueDesc = new();
+                queueDesc.Type = CommandListType.Direct;
+                queueDesc.Flags = CommandQueueFlags.None;
+                queueDesc.NodeMask = 1;
+
+                cmdQueue = _device.CreateCommandQueue(queueDesc);
+                cmdAlloc = _device.CreateCommandAllocator(CommandListType.Direct);
+                cmdList = _device.CreateCommandList(CommandListType.Direct, cmdAlloc, null);
+
+                cmdList.CopyTextureRegion(dstLocation, 0, 0, 0, srcLocation, null);
+                cmdList.ResourceBarrier(barrier);
+                cmdList.Close();
+
+                cmdQueue.ExecuteCommandList(cmdList);
+                cmdQueue.Signal(fence, 1);
+
+                if (fence.CompletedValue < 1)
+                {
+                    using var fenceEvent = new AutoResetEvent(false);
+                    var eventHandle = fenceEvent.SafeWaitHandle.DangerousGetHandle();
+                    if (eventHandle != IntPtr.Zero && !fenceEvent.SafeWaitHandle.IsInvalid)
+                    {
+                        fence.SetEventOnCompletion(1, eventHandle);
+                        if (!fenceEvent.WaitOne(2000))
+                        {
+                            Log.Error("[ImGuiDX12Impl] Timeout waiting for font texture upload fence event.");
+                        }
+                    }
+                    else
+                    {
+                        Log.Error("[ImGuiDX12Impl] Failed to obtain valid event handle for font upload fence. Falling back to polling.");
+                        var sw = Stopwatch.StartNew();
+                        while (fence.CompletedValue < 1 && sw.ElapsedMilliseconds < 2000)
+                        {
+                            Thread.Yield();
+                        }
+                        if (fence.CompletedValue < 1)
+                        {
+                            Log.Error("[ImGuiDX12Impl] Timeout polling font texture upload fence.");
+                        }
+                    }
+                }
             }
-
-            CommandQueueDescription queueDesc = new();
-            queueDesc.Type = CommandListType.Direct;
-            queueDesc.Flags = CommandQueueFlags.None;
-            queueDesc.NodeMask = 1;
-
-            var cmdQueue = _device.CreateCommandQueue(queueDesc);
-
-            var cmdAlloc = _device.CreateCommandAllocator(CommandListType.Direct);
-
-            var cmdList = _device.CreateCommandList(CommandListType.Direct, cmdAlloc, null);
-
-            cmdList.CopyTextureRegion(dstLocation, 0, 0, 0, srcLocation, null);
-
-            cmdList.ResourceBarrier(barrier);
-
-            cmdList.Close();
-
-            cmdQueue.ExecuteCommandList(cmdList);
-
-            cmdQueue.Signal(fence, 1);
-
-            fence.SetEventOnCompletion(1, @event);
-
-
-            Kernel32.WaitForSingleObject(@event, Kernel32.INFINITE);
-
-            cmdList?.Dispose();
-
-            cmdAlloc?.Dispose();
-
-            cmdQueue?.Dispose();
-
-            Kernel32.CloseHandle(@event);
-
-            fence?.Dispose();
-
-            uploadBuffer?.Dispose();
+            finally
+            {
+                cmdList?.Dispose();
+                cmdAlloc?.Dispose();
+                cmdQueue?.Dispose();
+                fence?.Dispose();
+                uploadBuffer?.Dispose();
+            }
 
 
             const int D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING = 0x1688;
@@ -450,13 +467,13 @@ public static class ImGuiDX12Impl
 
         // Bilinear sampling is required by default. Set 'io.Fonts->Flags |= ImFontAtlasFlags_NoBakedLines' or 'style.AntiAliasedLinesUseTex = false' to allow point/nearest sampling.
         StaticSamplerDescription staticSampler = new();
-        staticSampler.Filter = SharpDX.Direct3D12.Filter.ComparisonMinMagMipLinear;
+        staticSampler.Filter = SharpDX.Direct3D12.Filter.MinMagMipLinear;
         staticSampler.AddressU = SharpDX.Direct3D12.TextureAddressMode.Wrap;
         staticSampler.AddressV = SharpDX.Direct3D12.TextureAddressMode.Wrap;
         staticSampler.AddressW = SharpDX.Direct3D12.TextureAddressMode.Wrap;
         staticSampler.MipLODBias = 0.0f;
         staticSampler.MaxAnisotropy = 0;
-        staticSampler.ComparisonFunc = SharpDX.Direct3D12.Comparison.Always;
+        staticSampler.ComparisonFunc = SharpDX.Direct3D12.Comparison.Never;
         staticSampler.BorderColor = StaticBorderColor.TransparentBlack;
         staticSampler.MinLOD = 0.0f;
         staticSampler.MaxLOD = 0.0f;

@@ -38,7 +38,8 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
         }
         else
         {
-            Log.Error($"[DearImGuiInjectionPlus] Unsupported graphics backend: {deviceType}");
+            Log.Error($"[DearImGuiInjectionPlus] Unsupported graphics backend: {deviceType}. Aborting initialization.");
+            return;
         }
 
         PreloadNativeLibraries();

@@ -183,19 +183,31 @@ public static class DearImGuiInjectionPlus
             try
             {
                 var deviceType = UnityEngine.SystemInfo.graphicsDeviceType;
-                if (deviceType == UnityEngine.Rendering.GraphicsDeviceType.Direct3D12)
+                if (deviceType == UnityEngine.Rendering.GraphicsDeviceType.Direct3D11)
+                {
+                    RendererFinder.RendererFinder.TargetRendererKind = RendererKind.D3D11;
+                }
+                else if (deviceType == UnityEngine.Rendering.GraphicsDeviceType.Direct3D12)
                 {
                     RendererFinder.RendererFinder.TargetRendererKind = RendererKind.D3D12;
                 }
                 else
                 {
-                    RendererFinder.RendererFinder.TargetRendererKind = RendererKind.D3D11;
+                    Log.Error($"[DearImGuiInjectionPlus] Unsupported graphics backend: {deviceType}. Aborting initialization.");
+                    return;
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                RendererFinder.RendererFinder.TargetRendererKind = RendererKind.D3D11;
+                Log.Error($"[DearImGuiInjectionPlus] Failed to determine graphics backend: {ex.Message}. Aborting initialization.");
+                return;
             }
+        }
+
+        if (RendererFinder.RendererFinder.TargetRendererKind == RendererKind.None)
+        {
+            Log.Error("[DearImGuiInjectionPlus] TargetRendererKind is None. Aborting initialization.");
+            return;
         }
 
         RendererFinder.RendererFinder.OnRendererDetected += OnRendererDetected;
