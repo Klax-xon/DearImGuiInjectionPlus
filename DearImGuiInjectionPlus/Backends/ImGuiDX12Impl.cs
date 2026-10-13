@@ -33,7 +33,17 @@ public static class ImGuiDX12Impl
     private static Device _device;
     private static RootSignature pRootSignature;
     private static PipelineState pPipelineState;
-    private static Format RTVFormat;
+    internal static Format RTVFormat { get; private set; }
+
+    internal static void SetRtvFormat(Format rtvFormat)
+    {
+        if (RTVFormat == rtvFormat)
+            return;
+
+        RTVFormat = rtvFormat;
+        pPipelineState?.Dispose();
+        pPipelineState = null;
+    }
     private static Resource pFontTextureResource;
     private static CpuDescriptorHandle hFontSrvCpuDescHandle;
     private static GpuDescriptorHandle hFontSrvGpuDescHandle;
@@ -615,17 +625,21 @@ public static class ImGuiDX12Impl
 
         io.Fonts.SetTexID(IntPtr.Zero); // We copied bd->pFontTextureView to io.Fonts->TexID so let's clear that as well.
 
-        for (uint i = 0; i < numFramesInFlight; i++)
+        if (pFrameResources != null)
         {
-            var fr = pFrameResources[i];
+            for (uint i = 0; i < numFramesInFlight && i < pFrameResources.Length; i++)
+            {
+                var fr = pFrameResources[i];
+                if (fr == null)
+                    continue;
 
-            fr.IndexBuffer?.Dispose();
-            fr.IndexBuffer = null;
+                fr.IndexBuffer?.Dispose();
+                fr.IndexBuffer = null;
 
-            fr.VertexBuffer?.Dispose();
-            fr.VertexBuffer = null;
+                fr.VertexBuffer?.Dispose();
+                fr.VertexBuffer = null;
+            }
         }
-        pFrameResources = Array.Empty<RenderBuffer>();
     }
 
     internal static unsafe void Init(void* device, int num_frames_in_flight, Format rtv_format, void* cbv_srv_heap,

@@ -96,6 +96,32 @@ public static class DearImGuiTheme
         colors[(int)ImGuiCol.NavWindowingHighlight] = new(1.00f, 1.00f, 1.00f, 0.70f);
         colors[(int)ImGuiCol.NavWindowingDimBg] = new(0.80f, 0.80f, 0.80f, 0.20f);
         colors[(int)ImGuiCol.ModalWindowDimBg] = new(0.80f, 0.80f, 0.80f, 0.35f);
+
+        if (_isHdrApplied)
+        {
+            for (int i = 0; i < (int)ImGuiCol.COUNT; i++)
+            {
+                var c = colors[i];
+                colors[i] = new Vector4(
+                    (float)Math.Pow(c.X, 2.2),
+                    (float)Math.Pow(c.Y, 2.2),
+                    (float)Math.Pow(c.Z, 2.2),
+                    c.W
+                );
+            }
+        }
+    }
+
+    private static bool _isHdrApplied = false;
+
+    internal static void ApplyGammaCorrection(bool isHdr)
+    {
+        if (isHdr == _isHdrApplied)
+            return;
+
+        _isHdrApplied = isHdr;
+        SetupStyle();
+        Log.Info($"[DearImGuiTheme] Applied HDR gamma correction (isHdr: {isHdr}).");
     }
 
     private static unsafe void SetupCustomFont()

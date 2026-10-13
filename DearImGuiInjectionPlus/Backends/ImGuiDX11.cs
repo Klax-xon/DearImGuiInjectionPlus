@@ -116,8 +116,35 @@ internal static class ImGuiDX11
         _device = swapChain.GetDevice<Device>();
         _deviceContext = _device.ImmediateContext;
 
+        var backBufferFormat = Format.Unknown;
+        try
+        {
+            backBufferFormat = swapChain.Description.ModeDescription.Format;
+        }
+        catch { }
+
+        if (backBufferFormat == Format.Unknown && swapChain is SwapChain1 swapChain1)
+        {
+            try
+            {
+                backBufferFormat = swapChain1.Description1.Format;
+            }
+            catch { }
+        }
+
+        if (IsHdrFormat(backBufferFormat))
+        {
+            DearImGuiTheme.ApplyGammaCorrection(true);
+        }
+
         ImGuiDX11Impl.Init((void*)_device.NativePointer, (void*)_deviceContext.NativePointer);
     }
+
+    private static bool IsHdrFormat(Format format) =>
+        format == Format.R10G10B10A2_UNorm ||
+        format == Format.R10G10B10A2_Typeless ||
+        format == Format.R16G16B16A16_Float ||
+        format == Format.R16G16B16A16_Typeless;
 
     private static unsafe void RenderImGui(SwapChain swapChain, uint syncInterval, uint flags)
     {
@@ -146,7 +173,51 @@ internal static class ImGuiDX11
                 try
                 {
                     backBuffer = swapChain.GetBackBuffer<Texture2D>(0);
-                    rtv = new RenderTargetView(_device, backBuffer);
+                    if (backBuffer == null)
+                        return;
+
+                    var bbFormat = backBuffer.Description.Format;
+                    if (IsHdrFormat(bbFormat))
+                    {
+                        DearImGuiTheme.ApplyGammaCorrection(true);
+                    }
+
+                    if (bbFormat == Format.R8G8B8A8_UNorm_SRgb)
+                    {
+                        try
+                        {
+                            var rtvDesc = new RenderTargetViewDescription
+                            {
+                                Format = Format.R8G8B8A8_UNorm,
+                                Dimension = RenderTargetViewDimension.Texture2D
+                            };
+                            rtv = new RenderTargetView(_device, backBuffer, rtvDesc);
+                        }
+                        catch
+                        {
+                            rtv = new RenderTargetView(_device, backBuffer);
+                        }
+                    }
+                    else if (bbFormat == Format.B8G8R8A8_UNorm_SRgb)
+                    {
+                        try
+                        {
+                            var rtvDesc = new RenderTargetViewDescription
+                            {
+                                Format = Format.B8G8R8A8_UNorm,
+                                Dimension = RenderTargetViewDimension.Texture2D
+                            };
+                            rtv = new RenderTargetView(_device, backBuffer, rtvDesc);
+                        }
+                        catch
+                        {
+                            rtv = new RenderTargetView(_device, backBuffer);
+                        }
+                    }
+                    else
+                    {
+                        rtv = new RenderTargetView(_device, backBuffer);
+                    }
 
                     _deviceContext.OutputMerger.SetRenderTargets(rtv);
 

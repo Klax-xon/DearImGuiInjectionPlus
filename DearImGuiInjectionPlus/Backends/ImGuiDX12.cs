@@ -247,6 +247,48 @@ internal static class ImGuiDX12
         var swapChainDescription = swapChain.Description;
         int bufferCount = Math.Max(2, swapChainDescription.BufferCount);
 
+        var backBufferFormat = Format.Unknown;
+        try
+        {
+            using var backBuffer = swapChain.GetBackBuffer<Resource>(0);
+            if (backBuffer != null)
+            {
+                backBufferFormat = backBuffer.Description.Format;
+            }
+        }
+        catch { }
+
+        if (backBufferFormat == Format.Unknown)
+        {
+            try
+            {
+                if (swapChain is SwapChain1 swapChain1)
+                {
+                    backBufferFormat = swapChain1.Description1.Format;
+                }
+            }
+            catch { }
+        }
+
+        if (backBufferFormat == Format.Unknown)
+        {
+            try
+            {
+                backBufferFormat = swapChainDescription.ModeDescription.Format;
+            }
+            catch { }
+        }
+
+        if (backBufferFormat == Format.Unknown)
+        {
+            backBufferFormat = Format.R8G8B8A8_UNorm;
+        }
+
+        if (IsHdrFormat(backBufferFormat))
+        {
+            DearImGuiTheme.ApplyGammaCorrection(true);
+        }
+
         _fence = _device.CreateFence(0, FenceFlags.None);
         _fenceValue = 0;
         _fenceEvent = new System.Threading.AutoResetEvent(false);
@@ -279,13 +321,19 @@ internal static class ImGuiDX12
         _commandList.Close();
 
         ImGuiDX12Impl.Init((void*)_device.NativePointer, bufferCount,
-            Format.R8G8B8A8_UNorm,
+            backBufferFormat,
             (void*)_shaderDescriptorHeap.NativePointer,
             _shaderDescriptorHeap.CPUDescriptorHandleForHeapStart,
             _shaderDescriptorHeap.GPUDescriptorHandleForHeapStart);
 
-        Log.Info("[ImGuiDX12] InitImGuiDX12Internal completed.");
+        Log.Info($"[ImGuiDX12] InitImGuiDX12Internal completed with format {backBufferFormat}.");
     }
+
+    private static bool IsHdrFormat(Format format) =>
+        format == Format.R10G10B10A2_UNorm ||
+        format == Format.R10G10B10A2_Typeless ||
+        format == Format.R16G16B16A16_Float ||
+        format == Format.R16G16B16A16_Typeless;
 
     private static unsafe void RenderImGui(SwapChain3 swapChain, uint syncInterval, uint flags, IntPtr presentParameters)
     {
@@ -342,63 +390,88 @@ internal static class ImGuiDX12
                 Log.Info($"[ImGuiDX12] Frame {frame}: CommandAllocator reset & CommandList reset.");
             }
 
-            ImGuiDX12Impl.NewFrame();
-            DearImGuiInjectionPlus.NewFrame();
-            if (verboseFrame)
-            {
-                Log.Info($"[ImGuiDX12] Frame {frame}: DearImGuiInjectionPlus.NewFrame() finished.");
-            }
-
-            using (var backBufferResource = swapChain.GetBackBuffer<Resource>(backBufferIndex))
-            {
-                if (backBufferResource == null)
-                    return;
-
-                _device.CreateRenderTargetView(backBufferResource, null, _rtvDescriptorHeap.CPUDescriptorHandleForHeapStart);
-
-                // Pre-render: Transition backbuffer to RenderTarget
-                _commandList.ResourceBarrierTransition(backBufferResource, ResourceStates.Present, ResourceStates.RenderTarget);
-
-                _commandList.SetRenderTargets(_rtvDescriptorHeap.CPUDescriptorHandleForHeapStart, null);
-                _commandList.SetDescriptorHeaps(_shaderDescriptorHeap);
-
-                var drawData = ImGui.GetDrawData();
-                ImGuiDX12Impl.RenderDrawData(drawData, _commandList);
-                if (verboseFrame)
-                {
-                    Log.Info($"[ImGuiDX12] Frame {frame}: ImGuiDX12Impl.RenderDrawData() completed.");
-                }
-
-                // Post-render: Transition backbuffer back to Present
-                _commandList.ResourceBarrierTransition(backBufferResource, ResourceStates.RenderTarget, ResourceStates.Present);
-            }
-
-            _commandList.Close();
-            if (verboseFrame)
-            {
-                Log.Info($"[ImGuiDX12] Frame {frame}: CommandList closed.");
-            }
-
-            RendererFinder.Renderers.DX12Renderer.IsInsideExecuteCommandLists = true;
+            bool listClosed = false;
             try
             {
-                _commandQueue.ExecuteCommandList(_commandList);
+                ImGuiDX12Impl.NewFrame();
+                DearImGuiInjectionPlus.NewFrame();
+                if (verboseFrame)
+                {
+                    Log.Info($"[ImGuiDX12] Frame {frame}: DearImGuiInjectionPlus.NewFrame() finished.");
+                }
+
+                using (var backBufferResource = swapChain.GetBackBuffer<Resource>(backBufferIndex))
+                {
+                    if (backBufferResource == null)
+                        return;
+
+                    var backBufferFormat = backBufferResource.Description.Format;
+                    if (IsHdrFormat(backBufferFormat))
+                    {
+                        DearImGuiTheme.ApplyGammaCorrection(true);
+                    }
+
+                    if (backBufferFormat != Format.Unknown && backBufferFormat != ImGuiDX12Impl.RTVFormat)
+                    {
+                        Log.Info($"[ImGuiDX12] Backbuffer format changed from {ImGuiDX12Impl.RTVFormat} to {backBufferFormat}. Recreating PSO.");
+                        ImGuiDX12Impl.SetRtvFormat(backBufferFormat);
+                        ImGuiDX12Impl.CreateDeviceObjects();
+                    }
+
+                    _device.CreateRenderTargetView(backBufferResource, null, _rtvDescriptorHeap.CPUDescriptorHandleForHeapStart);
+
+                    // Pre-render: Transition backbuffer to RenderTarget
+                    _commandList.ResourceBarrierTransition(backBufferResource, ResourceStates.Present, ResourceStates.RenderTarget);
+
+                    _commandList.SetRenderTargets(_rtvDescriptorHeap.CPUDescriptorHandleForHeapStart, null);
+                    _commandList.SetDescriptorHeaps(_shaderDescriptorHeap);
+
+                    var drawData = ImGui.GetDrawData();
+                    ImGuiDX12Impl.RenderDrawData(drawData, _commandList);
+                    if (verboseFrame)
+                    {
+                        Log.Info($"[ImGuiDX12] Frame {frame}: ImGuiDX12Impl.RenderDrawData() completed.");
+                    }
+
+                    // Post-render: Transition backbuffer back to Present
+                    _commandList.ResourceBarrierTransition(backBufferResource, ResourceStates.RenderTarget, ResourceStates.Present);
+                }
+
+                _commandList.Close();
+                listClosed = true;
+                if (verboseFrame)
+                {
+                    Log.Info($"[ImGuiDX12] Frame {frame}: CommandList closed.");
+                }
+
+                RendererFinder.Renderers.DX12Renderer.IsInsideExecuteCommandLists = true;
+                try
+                {
+                    _commandQueue.ExecuteCommandList(_commandList);
+                }
+                finally
+                {
+                    RendererFinder.Renderers.DX12Renderer.IsInsideExecuteCommandLists = false;
+                }
+
+                if (_fence != null)
+                {
+                    _fenceValue++;
+                    _commandQueue.Signal(_fence, _fenceValue);
+                    currentFrameContext.FenceValue = _fenceValue;
+                }
+
+                if (verboseFrame)
+                {
+                    Log.Info($"[ImGuiDX12] Frame {frame}: CommandList executed on CommandQueue (Fence: {_fenceValue}).");
+                }
             }
             finally
             {
-                RendererFinder.Renderers.DX12Renderer.IsInsideExecuteCommandLists = false;
-            }
-
-            if (_fence != null)
-            {
-                _fenceValue++;
-                _commandQueue.Signal(_fence, _fenceValue);
-                currentFrameContext.FenceValue = _fenceValue;
-            }
-
-            if (verboseFrame)
-            {
-                Log.Info($"[ImGuiDX12] Frame {frame}: CommandList executed on CommandQueue (Fence: {_fenceValue}).");
+                if (!listClosed)
+                {
+                    try { _commandList.Close(); } catch { }
+                }
             }
         }
         catch (Exception ex)
