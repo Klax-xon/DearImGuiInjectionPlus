@@ -49,40 +49,22 @@ public static class RendererFinder
             return false;
         }
 
-        // 2. If target is D3D12, hook ID3D12CommandQueue.ExecuteCommandLists (Slot 10) upfront
-        // to capture the game's CommandQueue when it executes command lists.
+        // 2. If target is D3D12, prepare DX12 renderer instance.
+        // We do NOT hook ExecuteCommandLists upfront to avoid capturing arbitrary worker/compute queues (DXH-02).
+        // Querying the command queue directly from the swap chain on Present is prioritized first.
         if (TargetRendererKind == RendererKind.D3D12)
         {
-            try
-            {
-                _dx12Renderer = new DX12Renderer();
-                if (!_dx12Renderer.Init())
-                {
-                    Log.Warning("[RendererFinder] Failed to initialize DX12 CommandQueue hook.");
-                }
-                else
-                {
-                    Log.Info("[RendererFinder] Successfully hooked DX12 CommandQueue ExecuteCommandLists (Slot 10).");
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Warning($"[RendererFinder] Exception initializing DX12 renderer: {ex}");
-            }
+            _dx12Renderer = new DX12Renderer();
         }
 
         return true;
     }
 
     /// <summary>
-    /// Attempts to query the ID3D12CommandQueue directly from the swap chain via IDXGISwapChain::GetDevice (VTable 7),
-    /// or returns the captured command queue from DX12Renderer.
+    /// Attempts to query the ID3D12CommandQueue directly from the swap chain via IDXGISwapChain::GetDevice (VTable 7).
     /// </summary>
     public static unsafe IntPtr QueryCommandQueueFromSwapChain(IntPtr swapChainPtr)
     {
-        if (DX12Renderer.CapturedCommandQueue != IntPtr.Zero)
-            return DX12Renderer.CapturedCommandQueue;
-
         if (swapChainPtr == IntPtr.Zero)
             return IntPtr.Zero;
 
@@ -179,6 +161,76 @@ public static class RendererFinder
         return IntPtr.Zero;
     }
 
+    /// <summary>
+    /// Attempts to query the ID3D12Device directly from the swap chain via IDXGISwapChain::GetDevice (VTable 7).
+    /// </summary>
+    public static unsafe IntPtr QueryDeviceFromSwapChain(IntPtr swapChainPtr)
+    {
+        if (swapChainPtr == IntPtr.Zero)
+            return IntPtr.Zero;
+
+        try
+        {
+            IntPtr vtable = *(IntPtr*)swapChainPtr;
+            IntPtr getDevicePtr = *(IntPtr*)(vtable + 7 * IntPtr.Size);
+            var getDevice = Marshal.GetDelegateForFunctionPointer<GetDeviceDelegate>(getDevicePtr);
+
+            Guid d3d12DeviceGuid = new Guid("1898197d-37b4-45ae-80f7-745f44453b36");
+            int hr = getDevice(swapChainPtr, ref d3d12DeviceGuid, out IntPtr devicePtr);
+            if (hr == 0 && devicePtr != IntPtr.Zero)
+            {
+                return devicePtr;
+            }
+
+            Guid unknownGuid = new Guid("00000000-0000-0000-c000-000000000046");
+            hr = getDevice(swapChainPtr, ref unknownGuid, out IntPtr pUnknown);
+            if (hr == 0 && pUnknown != IntPtr.Zero)
+            {
+                try
+                {
+                    IntPtr pUnkVtable = *(IntPtr*)pUnknown;
+                    IntPtr qiPtr = *(IntPtr*)pUnkVtable;
+                    var qi = Marshal.GetDelegateForFunctionPointer<QueryInterfaceDelegate>(qiPtr);
+
+                    int qiHr = qi(pUnknown, ref d3d12DeviceGuid, out IntPtr devFromQi);
+                    if (qiHr == 0 && devFromQi != IntPtr.Zero)
+                    {
+                        return devFromQi;
+                    }
+                }
+                finally
+                {
+                    Marshal.Release(pUnknown);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[RendererFinder] Could not query ID3D12Device from swapchain: {ex.Message}");
+        }
+
+        return IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// Enables the ID3D12CommandQueue.ExecuteCommandLists detour as a fallback if the command queue
+    /// could not be queried directly from the swapchain.
+    /// </summary>
+    public static bool EnableDX12CommandQueueHook()
+    {
+        if (_dx12Renderer == null)
+        {
+            _dx12Renderer = new DX12Renderer();
+        }
+
+        if (DX12Renderer.CommandQueueHook == null || !DX12Renderer.CommandQueueHook.IsHooked)
+        {
+            return _dx12Renderer.Init();
+        }
+
+        return true;
+    }
+
     internal static void NotifyRendererDetected(RendererKind kind, IntPtr swapChainPtr)
     {
         RendererKind = kind;
@@ -186,7 +238,6 @@ public static class RendererFinder
         if (kind == RendererKind.D3D12 && _dx12Renderer == null)
         {
             _dx12Renderer = new DX12Renderer();
-            _dx12Renderer.Init();
         }
 
         try

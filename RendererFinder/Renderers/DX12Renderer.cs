@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using CppInterop;
 using Reloaded.Hooks;
+using RendererFinder.Windows;
 using SharpDX.Direct3D12;
 using SharpDX.DXGI;
 
@@ -12,8 +14,17 @@ public class DX12Renderer : IRenderer
     private static readonly List<object> _cache = new();
     private static SwapChain3 _cachedSwapChain;
     private static bool _loggedPresent = false;
+    private static readonly Guid D3D12DeviceGuid = new("1898197d-37b4-45ae-80f7-745f44453b36");
 
     public static IntPtr CapturedCommandQueue { get; set; } = IntPtr.Zero;
+
+    public static IntPtr ExpectedDevicePointer { get; set; } = IntPtr.Zero;
+
+    [ThreadStatic]
+    private static IntPtr _lastDirectQueueOnCurrentThread;
+
+    private static IntPtr _candidateCommandQueue = IntPtr.Zero;
+    private static uint _candidateThreadId = 0;
 
     [ThreadStatic]
     private static bool _isInsideExecuteCommandLists;
@@ -121,6 +132,19 @@ public class DX12Renderer : IRenderer
         _onPresentAction = null;
         _cachedSwapChain = null;
         CapturedCommandQueue = IntPtr.Zero;
+        _candidateCommandQueue = IntPtr.Zero;
+        _candidateThreadId = 0;
+        _lastDirectQueueOnCurrentThread = IntPtr.Zero;
+
+        if (ExpectedDevicePointer != IntPtr.Zero)
+        {
+            try
+            {
+                Marshal.Release(ExpectedDevicePointer);
+            }
+            catch { }
+            ExpectedDevicePointer = IntPtr.Zero;
+        }
 
         try
         {
@@ -132,8 +156,52 @@ public class DX12Renderer : IRenderer
         }
     }
 
+    public static void EnsureFallbackHookEnabled(IntPtr swapChainPtr)
+    {
+        if (ExpectedDevicePointer == IntPtr.Zero && swapChainPtr != IntPtr.Zero)
+        {
+            ExpectedDevicePointer = RendererFinder.QueryDeviceFromSwapChain(swapChainPtr);
+            if (ExpectedDevicePointer != IntPtr.Zero)
+            {
+                Log.Info($"[DX12Renderer] SwapChain device pointer registered for CommandQueue affinity: {ExpectedDevicePointer:X8}");
+            }
+        }
+
+        RendererFinder.EnableDX12CommandQueueHook();
+    }
+
+    public static IntPtr GetOrBindQueueForPresent(IntPtr swapChainPtr)
+    {
+        if (CapturedCommandQueue != IntPtr.Zero)
+            return CapturedCommandQueue;
+
+        uint currentThreadId = User32.GetCurrentThreadId();
+
+        // 1. Thread-local candidate direct queue executed on this Present thread
+        if (_lastDirectQueueOnCurrentThread != IntPtr.Zero)
+        {
+            CapturedCommandQueue = _lastDirectQueueOnCurrentThread;
+            Log.Info($"[DX12Renderer] Bound Direct ID3D12CommandQueue from Present thread ({currentThreadId}): {CapturedCommandQueue:X8}");
+            return CapturedCommandQueue;
+        }
+
+        // 2. Global candidate direct queue matching this Present thread
+        if (_candidateCommandQueue != IntPtr.Zero && _candidateThreadId == currentThreadId)
+        {
+            CapturedCommandQueue = _candidateCommandQueue;
+            Log.Info($"[DX12Renderer] Bound candidate Direct ID3D12CommandQueue matching Present thread affinity ({currentThreadId}): {CapturedCommandQueue:X8}");
+            return CapturedCommandQueue;
+        }
+
+        return IntPtr.Zero;
+    }
+
     public static void NotifyPresentFromDXGISwapChain(IntPtr self, uint syncInterval, uint flags)
     {
+        const uint DXGI_PRESENT_TEST = 0x00000001;
+        if ((flags & DXGI_PRESENT_TEST) != 0)
+            return;
+
         if (!_loggedPresent)
         {
             _loggedPresent = true;
@@ -183,8 +251,41 @@ public class DX12Renderer : IRenderer
                 var queueType = checkQueue.Description.Type;
                 if (queueType == CommandListType.Direct)
                 {
-                    CapturedCommandQueue = self;
-                    Log.Info($"[DX12Renderer] Successfully captured Direct ID3D12CommandQueue: {self:X8}");
+                    bool deviceMatches = true;
+                    if (ExpectedDevicePointer != IntPtr.Zero)
+                    {
+                        deviceMatches = false;
+                        try
+                        {
+                            checkQueue.GetDevice(D3D12DeviceGuid, out IntPtr queueDevicePtr);
+                            if (queueDevicePtr != IntPtr.Zero)
+                            {
+                                try
+                                {
+                                    if (queueDevicePtr == ExpectedDevicePointer)
+                                    {
+                                        deviceMatches = true;
+                                    }
+                                }
+                                finally
+                                {
+                                    Marshal.Release(queueDevicePtr);
+                                }
+                            }
+                        }
+                        catch (Exception devEx)
+                        {
+                            Log.Warning($"[DX12Renderer] Failed to query device from command queue: {devEx.Message}");
+                        }
+                    }
+
+                    if (deviceMatches)
+                    {
+                        // Defer queue binding until Present is invoked; record candidate queue and thread affinity
+                        _lastDirectQueueOnCurrentThread = self;
+                        _candidateCommandQueue = self;
+                        _candidateThreadId = User32.GetCurrentThreadId();
+                    }
                 }
             }
             catch (Exception ex)

@@ -20,6 +20,9 @@ internal static class User32
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr LoadLibrary([MarshalAs(UnmanagedType.LPWStr)] string lpLibFileName);
 
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentThreadId();
+
     [DllImport("user32.dll")]
     static extern IntPtr DefWindowProcW(IntPtr hWnd, uint uMsg, IntPtr wParam, IntPtr lParam);
 

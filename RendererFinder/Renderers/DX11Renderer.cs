@@ -47,6 +47,7 @@ public class DX11Renderer : IRenderer
     private static readonly List<object> _cache = new();
     private static SwapChain _cachedSwapChain;
     private static bool _loggedPresent = false;
+    private const uint DXGI_PRESENT_TEST = 0x00000001;
 
     [ThreadStatic]
     private static bool _isInsidePresent;
@@ -255,6 +256,11 @@ public class DX11Renderer : IRenderer
 
     private static IntPtr SwapChainPresentHook(IntPtr self, uint syncInterval, uint flags)
     {
+        if ((flags & DXGI_PRESENT_TEST) != 0)
+        {
+            return _swapChainPresentHook.OriginalFunction(self, syncInterval, flags);
+        }
+
         if (RendererFinder.IsShuttingDown)
         {
             return _swapChainPresentHook.OriginalFunction(self, syncInterval, flags);
@@ -289,6 +295,11 @@ public class DX11Renderer : IRenderer
 
     private static IntPtr SwapChainPresent1Hook(IntPtr self, uint syncInterval, uint flags, IntPtr presentParameters)
     {
+        if ((flags & DXGI_PRESENT_TEST) != 0)
+        {
+            return _swapChainPresent1Hook.OriginalFunction(self, syncInterval, flags, presentParameters);
+        }
+
         if (RendererFinder.IsShuttingDown)
         {
             return _swapChainPresent1Hook.OriginalFunction(self, syncInterval, flags, presentParameters);
@@ -323,6 +334,11 @@ public class DX11Renderer : IRenderer
 
     private static void HandlePresent(IntPtr self, uint syncInterval, uint flags)
     {
+        if ((flags & DXGI_PRESENT_TEST) != 0)
+        {
+            return;
+        }
+
         if (RendererFinder.IsShuttingDown)
         {
             return;
@@ -349,10 +365,16 @@ public class DX11Renderer : IRenderer
                 var queue = DX12Renderer.CapturedCommandQueue;
                 if (queue == IntPtr.Zero)
                 {
+                    // 1. Prioritize querying the command queue directly from the swapchain (DXH-02)
                     queue = RendererFinder.QueryCommandQueueFromSwapChain(self);
                     if (queue != IntPtr.Zero)
                     {
                         DX12Renderer.CapturedCommandQueue = queue;
+                    }
+                    else
+                    {
+                        // 2. Check deferred queue binding from ExecuteCommandLists hook matching present thread & device affinity
+                        queue = DX12Renderer.GetOrBindQueueForPresent(self);
                     }
                 }
 
@@ -378,7 +400,8 @@ public class DX11Renderer : IRenderer
                 }
                 else
                 {
-                    // CommandQueue not captured yet; defer initialization until queue is available
+                    // CommandQueue not captured yet; enable fallback detour with swapchain device affinity and defer initialization
+                    DX12Renderer.EnsureFallbackHookEnabled(self);
                     return;
                 }
             }
