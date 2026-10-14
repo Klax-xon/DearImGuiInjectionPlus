@@ -385,18 +385,11 @@ public class DX11Renderer : IRenderer
                     Log.Info($"[RendererFinder] Successfully initialized Direct3D 12 backend on Frame 1 with CommandQueue: {queue:X8}.");
                     RendererFinder.NotifyRendererDetected(RendererKind.D3D12, self);
 
-                    if (DX12Renderer.CommandQueueHook != null && DX12Renderer.CommandQueueHook.IsHooked)
-                    {
-                        try
-                        {
-                            DX12Renderer.CommandQueueHook.Disable();
-                            Log.Info("[DX12Renderer] Successfully unhooked ExecuteCommandLists after capturing queue.");
-                        }
-                        catch (Exception ex)
-                        {
-                            Log.Error($"[DX12Renderer] Error disabling CommandQueue hook: {ex}");
-                        }
-                    }
+                    // DXH-09: Do not dynamically call Hook.Disable() on hot graphics paths during active rendering.
+                    // Leaving the hook activated and setting _captureQueue = false avoids rewriting executable memory pages
+                    // while worker threads may concurrently execute the prologue.
+                    DX12Renderer._captureQueue = false;
+                    Log.Info("[DX12Renderer] Bypassed ExecuteCommandLists hook via pass-through flag after capturing queue.");
                 }
                 else
                 {

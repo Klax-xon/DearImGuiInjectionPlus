@@ -16,7 +16,28 @@ public class DX12Renderer : IRenderer
     private static bool _loggedPresent = false;
     private static readonly Guid D3D12DeviceGuid = new("1898197d-37b4-45ae-80f7-745f44453b36");
 
-    public static IntPtr CapturedCommandQueue { get; set; } = IntPtr.Zero;
+    public static volatile bool _captureQueue = true;
+
+    public static bool CaptureQueue
+    {
+        get => _captureQueue;
+        set => _captureQueue = value;
+    }
+
+    private static IntPtr _capturedCommandQueue = IntPtr.Zero;
+
+    public static IntPtr CapturedCommandQueue
+    {
+        get => _capturedCommandQueue;
+        set
+        {
+            _capturedCommandQueue = value;
+            if (value != IntPtr.Zero)
+            {
+                _captureQueue = false;
+            }
+        }
+    }
 
     public static IntPtr ExpectedDevicePointer { get; set; } = IntPtr.Zero;
 
@@ -58,7 +79,11 @@ public class DX12Renderer : IRenderer
         public bool IsHookActivated => _hook != null && _hook.IsHookActivated;
         public bool IsHookEnabled => _hook != null && _hook.IsHookEnabled;
 
-        public void Disable() => _hook?.Disable();
+        public void Disable()
+        {
+            _captureQueue = false;
+            _hook?.Disable();
+        }
         public void Activate() => _hook?.Activate();
         public void Enable() => _hook?.Enable();
         public CommandQueueExecuteCommandListDelegate OriginalFunction => _hook?.OriginalFunction;
@@ -94,6 +119,7 @@ public class DX12Renderer : IRenderer
     {
         try
         {
+            _captureQueue = true;
             var d3d12Module = Windows.User32.GetModuleHandle("d3d12.dll");
             if (d3d12Module == IntPtr.Zero)
             {
@@ -129,6 +155,7 @@ public class DX12Renderer : IRenderer
 
     public void Dispose()
     {
+        _captureQueue = false;
         _onPresentAction = null;
         _cachedSwapChain = null;
         CapturedCommandQueue = IntPtr.Zero;
@@ -230,7 +257,7 @@ public class DX12Renderer : IRenderer
 
     private static void CommandQueueExecuteCommandListHook(IntPtr self, int numCommandLists, IntPtr ppCommandLists)
     {
-        if (CapturedCommandQueue != IntPtr.Zero)
+        if (!_captureQueue || CapturedCommandQueue != IntPtr.Zero)
         {
             _commandQueueExecuteCommandListHook.OriginalFunction(self, numCommandLists, ppCommandLists);
             return;

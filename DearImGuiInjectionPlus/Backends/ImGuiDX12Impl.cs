@@ -333,152 +333,147 @@ public static class ImGuiDX12Impl
             desc.Layout = TextureLayout.Unknown;
             desc.Flags = ResourceFlags.None;
 
-            var pTexture = _device.CreateCommittedResource(props, HeapFlags.None, desc, ResourceStates.CopyDestination);
-
-            const int D3D12_TEXTURE_DATA_PITCH_ALIGNMENT = 256;
-
-            uint uploadPitch = (uint)((width * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u));
-            uint uploadSize = (uint)(height * uploadPitch);
-            desc.Dimension = ResourceDimension.Buffer;
-            desc.Alignment = 0;
-            desc.Width = uploadSize;
-            desc.Height = 1;
-            desc.DepthOrArraySize = 1;
-            desc.MipLevels = 1;
-            desc.Format = Format.Unknown;
-            desc.SampleDescription.Count = 1;
-            desc.SampleDescription.Quality = 0;
-            desc.Layout = TextureLayout.RowMajor;
-            desc.Flags = ResourceFlags.None;
-
-            props.Type = HeapType.Upload;
-            props.CPUPageProperty = CpuPageProperty.Unknown;
-            props.MemoryPoolPreference = MemoryPool.Unknown;
-
-            var uploadBuffer = _device.CreateCommittedResource(props, HeapFlags.None, desc, ResourceStates.GenericRead);
-
-            SharpDX.Direct3D12.Range range = new()
-            {
-                Begin = 0,
-                End = uploadSize
-            };
-
-            var mapped = (nuint)(nint)uploadBuffer.Map(0, range);
-
-            nuint nuintHeight = (nuint)height;
-            nuint nuintWidth = (nuint)width;
-            for (nuint y = 0; y < nuintHeight; y++)
-            {
-                var dst = mapped + y * uploadPitch;
-                var src = pixels + y * nuintWidth * 4;
-                var len = width * 4;
-
-                System.Buffer.MemoryCopy(src, (void*)dst, len, len);
-            }
-
-            uploadBuffer.Unmap(0, range);
-
-            TextureCopyLocation srcLocation = new(uploadBuffer, new PlacedSubResourceFootprint()
-            {
-                Footprint = new()
-                {
-                    Format = Format.R8G8B8A8_UNorm,
-                    Width = width,
-                    Height = height,
-                    Depth = 1,
-                    RowPitch = (int)uploadPitch
-                },
-            })
-            {
-                Type = TextureCopyType.PlacedFootprint
-            };
-
-            TextureCopyLocation dstLocation = new(pTexture, 0)
-            {
-                Type = TextureCopyType.SubResourceIndex
-            };
-
-            const int D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES = unchecked((int)0xffffffff);
-            ResourceBarrier barrier = new();
-            barrier.Type = ResourceBarrierType.Transition;
-            barrier.Flags = ResourceBarrierFlags.None;
-            barrier.Transition = new ResourceTransitionBarrier(pTexture, ResourceStates.CopyDestination, ResourceStates.PixelShaderResource)
-            {
-                Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES
-            };
-
-            Fence fence = null;
-            CommandQueue cmdQueue = null;
-            CommandAllocator cmdAlloc = null;
-            GraphicsCommandList cmdList = null;
-
+            Resource pTexture = _device.CreateCommittedResource(props, HeapFlags.None, desc, ResourceStates.CopyDestination);
             try
             {
-                fence = _device.CreateFence(0, FenceFlags.None);
+                const int D3D12_TEXTURE_DATA_PITCH_ALIGNMENT = 256;
 
-                CommandQueueDescription queueDesc = new();
-                queueDesc.Type = CommandListType.Direct;
-                queueDesc.Flags = CommandQueueFlags.None;
-                queueDesc.NodeMask = 1;
+                uint uploadPitch = (uint)((width * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u));
+                uint uploadSize = (uint)(height * uploadPitch);
+                desc.Dimension = ResourceDimension.Buffer;
+                desc.Alignment = 0;
+                desc.Width = uploadSize;
+                desc.Height = 1;
+                desc.DepthOrArraySize = 1;
+                desc.MipLevels = 1;
+                desc.Format = Format.Unknown;
+                desc.SampleDescription.Count = 1;
+                desc.SampleDescription.Quality = 0;
+                desc.Layout = TextureLayout.RowMajor;
+                desc.Flags = ResourceFlags.None;
 
-                cmdQueue = _device.CreateCommandQueue(queueDesc);
-                cmdAlloc = _device.CreateCommandAllocator(CommandListType.Direct);
-                cmdList = _device.CreateCommandList(CommandListType.Direct, cmdAlloc, null);
+                props.Type = HeapType.Upload;
+                props.CPUPageProperty = CpuPageProperty.Unknown;
+                props.MemoryPoolPreference = MemoryPool.Unknown;
 
-                cmdList.CopyTextureRegion(dstLocation, 0, 0, 0, srcLocation, null);
-                cmdList.ResourceBarrier(barrier);
-                cmdList.Close();
-
-                cmdQueue.ExecuteCommandList(cmdList);
-                cmdQueue.Signal(fence, 1);
-
-                if (fence.CompletedValue < 1)
+                using (var uploadBuffer = _device.CreateCommittedResource(props, HeapFlags.None, desc, ResourceStates.GenericRead))
                 {
-                    using var fenceEvent = new AutoResetEvent(false);
-                    var eventHandle = fenceEvent.SafeWaitHandle.DangerousGetHandle();
-                    if (eventHandle != IntPtr.Zero && !fenceEvent.SafeWaitHandle.IsInvalid)
+                    SharpDX.Direct3D12.Range range = new()
                     {
-                        fence.SetEventOnCompletion(1, eventHandle);
-                        if (!fenceEvent.WaitOne(2000))
+                        Begin = 0,
+                        End = uploadSize
+                    };
+
+                    var mapped = (nuint)(nint)uploadBuffer.Map(0, range);
+                    try
+                    {
+                        nuint nuintHeight = (nuint)height;
+                        nuint nuintWidth = (nuint)width;
+                        for (nuint y = 0; y < nuintHeight; y++)
                         {
-                            Log.Error("[ImGuiDX12Impl] Timeout waiting for font texture upload fence event.");
+                            var dst = mapped + y * uploadPitch;
+                            var src = pixels + y * nuintWidth * 4;
+                            var len = width * 4;
+
+                            System.Buffer.MemoryCopy(src, (void*)dst, len, len);
                         }
                     }
-                    else
+                    finally
                     {
-                        Log.Error("[ImGuiDX12Impl] Failed to obtain valid event handle for font upload fence. Falling back to polling.");
-                        var sw = Stopwatch.StartNew();
-                        while (fence.CompletedValue < 1 && sw.ElapsedMilliseconds < 2000)
+                        uploadBuffer.Unmap(0, range);
+                    }
+
+                    TextureCopyLocation srcLocation = new(uploadBuffer, new PlacedSubResourceFootprint()
+                    {
+                        Footprint = new()
                         {
-                            Thread.Yield();
+                            Format = Format.R8G8B8A8_UNorm,
+                            Width = width,
+                            Height = height,
+                            Depth = 1,
+                            RowPitch = (int)uploadPitch
+                        },
+                    })
+                    {
+                        Type = TextureCopyType.PlacedFootprint
+                    };
+
+                    TextureCopyLocation dstLocation = new(pTexture, 0)
+                    {
+                        Type = TextureCopyType.SubResourceIndex
+                    };
+
+                    const int D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES = unchecked((int)0xffffffff);
+                    ResourceBarrier barrier = new();
+                    barrier.Type = ResourceBarrierType.Transition;
+                    barrier.Flags = ResourceBarrierFlags.None;
+                    barrier.Transition = new ResourceTransitionBarrier(pTexture, ResourceStates.CopyDestination, ResourceStates.PixelShaderResource)
+                    {
+                        Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES
+                    };
+
+                    using var fence = _device.CreateFence(0, FenceFlags.None);
+
+                    CommandQueueDescription queueDesc = new();
+                    queueDesc.Type = CommandListType.Direct;
+                    queueDesc.Flags = CommandQueueFlags.None;
+                    queueDesc.NodeMask = 1;
+
+                    using var cmdQueue = _device.CreateCommandQueue(queueDesc);
+                    using var cmdAlloc = _device.CreateCommandAllocator(CommandListType.Direct);
+                    using var cmdList = _device.CreateCommandList(CommandListType.Direct, cmdAlloc, null);
+
+                    cmdList.CopyTextureRegion(dstLocation, 0, 0, 0, srcLocation, null);
+                    cmdList.ResourceBarrier(barrier);
+                    cmdList.Close();
+
+                    cmdQueue.ExecuteCommandList(cmdList);
+                    cmdQueue.Signal(fence, 1);
+
+                    if (fence.CompletedValue < 1)
+                    {
+                        using var fenceEvent = new AutoResetEvent(false);
+                        var eventHandle = fenceEvent.SafeWaitHandle.DangerousGetHandle();
+                        if (eventHandle != IntPtr.Zero && !fenceEvent.SafeWaitHandle.IsInvalid)
+                        {
+                            fence.SetEventOnCompletion(1, eventHandle);
+                            if (!fenceEvent.WaitOne(2000))
+                            {
+                                Log.Error("[ImGuiDX12Impl] Timeout waiting for font texture upload fence event.");
+                            }
                         }
-                        if (fence.CompletedValue < 1)
+                        else
                         {
-                            Log.Error("[ImGuiDX12Impl] Timeout polling font texture upload fence.");
+                            Log.Error("[ImGuiDX12Impl] Failed to obtain valid event handle for font upload fence. Falling back to polling.");
+                            var sw = Stopwatch.StartNew();
+                            while (fence.CompletedValue < 1 && sw.ElapsedMilliseconds < 2000)
+                            {
+                                Thread.Yield();
+                            }
+                            if (fence.CompletedValue < 1)
+                            {
+                                Log.Error("[ImGuiDX12Impl] Timeout polling font texture upload fence.");
+                            }
                         }
                     }
                 }
+
+                const int D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING = 0x1688;
+                ShaderResourceViewDescription srvDesc = new();
+                srvDesc.Format = Format.R8G8B8A8_UNorm;
+                srvDesc.Dimension = SharpDX.Direct3D12.ShaderResourceViewDimension.Texture2D;
+                srvDesc.Texture2D.MipLevels = desc.MipLevels;
+                srvDesc.Texture2D.MostDetailedMip = 0;
+                srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                _device.CreateShaderResourceView(pTexture, srvDesc, hFontSrvCpuDescHandle);
+                pFontTextureResource?.Dispose();
+                pFontTextureResource = pTexture;
+                pTexture = null;
             }
             finally
             {
-                cmdList?.Dispose();
-                cmdAlloc?.Dispose();
-                cmdQueue?.Dispose();
-                fence?.Dispose();
-                uploadBuffer?.Dispose();
+                pTexture?.Dispose();
             }
-
-
-            const int D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING = 0x1688;
-            ShaderResourceViewDescription srvDesc = new();
-            srvDesc.Format = Format.R8G8B8A8_UNorm;
-            srvDesc.Dimension = SharpDX.Direct3D12.ShaderResourceViewDimension.Texture2D;
-            srvDesc.Texture2D.MipLevels = desc.MipLevels;
-            srvDesc.Texture2D.MostDetailedMip = 0;
-            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            _device.CreateShaderResourceView(pTexture, srvDesc, hFontSrvCpuDescHandle);
-            pFontTextureResource?.Dispose();
-            pFontTextureResource = pTexture;
         }
 
         // Store our identifier

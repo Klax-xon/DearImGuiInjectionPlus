@@ -223,6 +223,8 @@ public static class RendererFinder
             _dx12Renderer = new DX12Renderer();
         }
 
+        DX12Renderer._captureQueue = true;
+
         if (DX12Renderer.CommandQueueHook == null || !DX12Renderer.CommandQueueHook.IsHooked)
         {
             return _dx12Renderer.Init();
