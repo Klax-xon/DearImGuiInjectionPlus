@@ -58,6 +58,7 @@ public static class ImGuiDX12Impl
     private static InputLayoutDescription _inputLayout;
     private static ShaderBytecode _pixelShader;
     private static IntPtr _renderNamePtr;
+    private static bool _deviceObjectsCreationFailed;
 
     public unsafe struct VERTEX_CONSTANT_BUFFER_DX12
     {
@@ -179,7 +180,7 @@ public static class ImGuiDX12Impl
         if (draw_data->DisplaySize.X <= 0.0f || draw_data->DisplaySize.Y <= 0.0f)
             return;
 
-        if (_device == null)
+        if (_device == null || pPipelineState == null)
             return;
 
         // Create and grow vertex/index buffers if needed
@@ -498,8 +499,11 @@ public static class ImGuiDX12Impl
         if (_device == null)
             return false;
 
-        if (pPipelineState != null)
+        if (pPipelineState != null || pRootSignature != null || pFontTextureResource != null)
             InvalidateDeviceObjects();
+
+        try
+        {
 
         RootParameter[] param = new RootParameter[2];
 
@@ -544,13 +548,17 @@ public static class ImGuiDX12Impl
             param,
             new[] { staticSampler }
         );
-        var blob = rootSignatureDescription.Serialize();
-        pRootSignature = _device.CreateRootSignature(new DataPointer(blob.BufferPointer, blob.BufferSize));
-        if (pRootSignature == null)
+        using (var blob = rootSignatureDescription.Serialize())
         {
-            Log.Error("pRootSignature == null");
+            pRootSignature = _device.CreateRootSignature(new DataPointer(blob.BufferPointer, blob.BufferSize));
+            if (pRootSignature == null)
+            {
+                Log.Error("[ImGuiDX12Impl] Failed to create device objects: root signature is null.");
+                InvalidateDeviceObjects();
+                _deviceObjectsCreationFailed = true;
+                return false;
+            }
         }
-        blob?.Dispose();
 
         GraphicsPipelineStateDescription psoDesc = new();
         psoDesc.NodeMask = 1;
@@ -644,14 +652,40 @@ public static class ImGuiDX12Impl
         psoDesc.StreamOutput = new();
 
         pPipelineState = _device.CreateGraphicsPipelineState(psoDesc);
+        if (pPipelineState == null)
+        {
+            Log.Error("[ImGuiDX12Impl] Failed to create device objects: graphics pipeline state is null.");
+            InvalidateDeviceObjects();
+            _deviceObjectsCreationFailed = true;
+            return false;
+        }
 
         CreateFontsTexture();
 
+        if (pFontTextureResource == null)
+        {
+            Log.Error("[ImGuiDX12Impl] Failed to create device objects: font texture resource is null.");
+            InvalidateDeviceObjects();
+            _deviceObjectsCreationFailed = true;
+            return false;
+        }
+
+        _deviceObjectsCreationFailed = false;
         return true;
     }
+    catch (Exception ex)
+    {
+        Log.Error($"[ImGuiDX12Impl] Failed to create device objects: {ex}");
+        InvalidateDeviceObjects();
+        _deviceObjectsCreationFailed = true;
+        return false;
+    }
+}
 
     public static void InvalidateDeviceObjects()
     {
+        _deviceObjectsCreationFailed = false;
+
         if (_device == null)
         {
             return;
@@ -667,6 +701,9 @@ public static class ImGuiDX12Impl
 
         pFontTextureResource?.Dispose();
         pFontTextureResource = null;
+
+        _vertexShader = default;
+        _pixelShader = default;
 
         io.Fonts.SetTexID(IntPtr.Zero); // We copied bd->pFontTextureView to io.Fonts->TexID so let's clear that as well.
 
@@ -692,6 +729,7 @@ public static class ImGuiDX12Impl
     internal static unsafe void Init(void* device, int num_frames_in_flight, Format rtv_format, void* cbv_srv_heap,
         CpuDescriptorHandle font_srv_cpu_desc_handle, GpuDescriptorHandle font_srv_gpu_desc_handle)
     {
+        _deviceObjectsCreationFailed = false;
         if (_device != null)
         {
             Log.Error("Already initialized a renderer backend!");
@@ -750,6 +788,9 @@ public static class ImGuiDX12Impl
 
     internal static void NewFrame()
     {
+        if (_deviceObjectsCreationFailed)
+            return;
+
         if (pPipelineState == null)
             CreateDeviceObjects();
     }

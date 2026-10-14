@@ -41,6 +41,7 @@ public static class ImGuiDX11Impl
     private static VertexBufferBinding _vertexBinding;
     // so we don't make a temporary object every frame
     private static RawColor4 _blendColor = new RawColor4(0, 0, 0, 0);
+    private static bool _deviceObjectsCreationFailed;
 
     public unsafe struct VERTEX_CONSTANT_BUFFER_DX11
     {
@@ -90,6 +91,9 @@ public static class ImGuiDX11Impl
     {
         // Avoid rendering when minimized
         if (draw_data->DisplaySize.X <= 0.0f || draw_data->DisplaySize.Y <= 0.0f)
+            return;
+
+        if (_deviceContext == null || _fontSampler == null)
             return;
 
         DeviceContext ctx = _deviceContext;
@@ -542,89 +546,110 @@ public static class ImGuiDX11Impl
             InvalidateDeviceObjects();
         }
 
-        var shadersFolder = Path.Combine(DearImGuiInjectionPlus.AssetsFolderPath, "Shaders");
-
-        var vertexShaderPath = Path.Combine(shadersFolder, "imgui-vertex.hlsl.bytes");
-        byte[] vertexShaderBytes = File.ReadAllBytes(vertexShaderPath);
-        _vertexShader = new VertexShader(_device, vertexShaderBytes);
-
-        // Create the input layout
-        _inputLayout = new InputLayout(_device, vertexShaderBytes, new[]
+        try
         {
-            new InputElement("POSITION", 0, Format.R32G32_Float, 0),
-            new InputElement("TEXCOORD", 0, Format.R32G32_Float, 0),
-            new InputElement("COLOR", 0, Format.R8G8B8A8_UNorm, 0)
-        });
+            var shadersFolder = Path.Combine(DearImGuiInjectionPlus.AssetsFolderPath, "Shaders");
 
-        // Create the constant buffer
-        _vertexConstantBuffer = new Buffer(_device, new BufferDescription
-        {
-            Usage = ResourceUsage.Dynamic,
-            BindFlags = BindFlags.ConstantBuffer,
-            CpuAccessFlags = CpuAccessFlags.Write,
-            OptionFlags = ResourceOptionFlags.None,
-            SizeInBytes = 16 * sizeof(float)
-        });
+            var vertexShaderPath = Path.Combine(shadersFolder, "imgui-vertex.hlsl.bytes");
+            byte[] vertexShaderBytes = File.ReadAllBytes(vertexShaderPath);
+            _vertexShader = new VertexShader(_device, vertexShaderBytes);
 
-        var pixelShaderPath = Path.Combine(shadersFolder, "imgui-frag.hlsl.bytes");
-        byte[] pixelShaderBytes = File.ReadAllBytes(pixelShaderPath);
-        _pixelShader = new PixelShader(_device, pixelShaderBytes);
-
-        // Create the blending setup
-        // ...of course this was setup in a way that can't be done inline
-        var blendStateDesc = new BlendStateDescription
-        {
-            AlphaToCoverageEnable = false
-        };
-        blendStateDesc.RenderTarget[0].IsBlendEnabled = true;
-        blendStateDesc.RenderTarget[0].SourceBlend = BlendOption.SourceAlpha;
-        blendStateDesc.RenderTarget[0].DestinationBlend = BlendOption.InverseSourceAlpha;
-        blendStateDesc.RenderTarget[0].BlendOperation = BlendOperation.Add;
-        blendStateDesc.RenderTarget[0].SourceAlphaBlend = BlendOption.InverseSourceAlpha;
-        blendStateDesc.RenderTarget[0].DestinationAlphaBlend = BlendOption.Zero;
-        blendStateDesc.RenderTarget[0].AlphaBlendOperation = BlendOperation.Add;
-        blendStateDesc.RenderTarget[0].RenderTargetWriteMask = ColorWriteMaskFlags.All;
-        _blendState = new BlendState(_device, blendStateDesc);
-
-        // Create the rasterizer state
-        _rasterizerState = new RasterizerState(_device, new RasterizerStateDescription
-        {
-            FillMode = FillMode.Solid,
-            CullMode = CullMode.None,
-            IsScissorEnabled = true,
-            IsDepthClipEnabled = true
-        });
-
-        // Create the depth-stencil State
-        _depthStencilState = new DepthStencilState(_device, new DepthStencilStateDescription
-        {
-            IsDepthEnabled = false,
-            DepthWriteMask = DepthWriteMask.All,
-            DepthComparison = Comparison.Always,
-            IsStencilEnabled = false,
-            FrontFace =
+            // Create the input layout
+            _inputLayout = new InputLayout(_device, vertexShaderBytes, new[]
             {
-                FailOperation = StencilOperation.Keep,
-                DepthFailOperation = StencilOperation.Keep,
-                PassOperation = StencilOperation.Keep,
-                Comparison = Comparison.Always
-            },
-            BackFace =
+                new InputElement("POSITION", 0, Format.R32G32_Float, 0),
+                new InputElement("TEXCOORD", 0, Format.R32G32_Float, 0),
+                new InputElement("COLOR", 0, Format.R8G8B8A8_UNorm, 0)
+            });
+
+            // Create the constant buffer
+            _vertexConstantBuffer = new Buffer(_device, new BufferDescription
             {
-                FailOperation = StencilOperation.Keep,
-                DepthFailOperation = StencilOperation.Keep,
-                PassOperation = StencilOperation.Keep,
-                Comparison = Comparison.Always
+                Usage = ResourceUsage.Dynamic,
+                BindFlags = BindFlags.ConstantBuffer,
+                CpuAccessFlags = CpuAccessFlags.Write,
+                OptionFlags = ResourceOptionFlags.None,
+                SizeInBytes = 16 * sizeof(float)
+            });
+
+            var pixelShaderPath = Path.Combine(shadersFolder, "imgui-frag.hlsl.bytes");
+            byte[] pixelShaderBytes = File.ReadAllBytes(pixelShaderPath);
+            _pixelShader = new PixelShader(_device, pixelShaderBytes);
+
+            // Create the blending setup
+            // ...of course this was setup in a way that can't be done inline
+            var blendStateDesc = new BlendStateDescription
+            {
+                AlphaToCoverageEnable = false
+            };
+            blendStateDesc.RenderTarget[0].IsBlendEnabled = true;
+            blendStateDesc.RenderTarget[0].SourceBlend = BlendOption.SourceAlpha;
+            blendStateDesc.RenderTarget[0].DestinationBlend = BlendOption.InverseSourceAlpha;
+            blendStateDesc.RenderTarget[0].BlendOperation = BlendOperation.Add;
+            blendStateDesc.RenderTarget[0].SourceAlphaBlend = BlendOption.InverseSourceAlpha;
+            blendStateDesc.RenderTarget[0].DestinationAlphaBlend = BlendOption.Zero;
+            blendStateDesc.RenderTarget[0].AlphaBlendOperation = BlendOperation.Add;
+            blendStateDesc.RenderTarget[0].RenderTargetWriteMask = ColorWriteMaskFlags.All;
+            _blendState = new BlendState(_device, blendStateDesc);
+
+            // Create the rasterizer state
+            _rasterizerState = new RasterizerState(_device, new RasterizerStateDescription
+            {
+                FillMode = FillMode.Solid,
+                CullMode = CullMode.None,
+                IsScissorEnabled = true,
+                IsDepthClipEnabled = true
+            });
+
+            // Create the depth-stencil State
+            _depthStencilState = new DepthStencilState(_device, new DepthStencilStateDescription
+            {
+                IsDepthEnabled = false,
+                DepthWriteMask = DepthWriteMask.All,
+                DepthComparison = Comparison.Always,
+                IsStencilEnabled = false,
+                FrontFace =
+                {
+                    FailOperation = StencilOperation.Keep,
+                    DepthFailOperation = StencilOperation.Keep,
+                    PassOperation = StencilOperation.Keep,
+                    Comparison = Comparison.Always
+                },
+                BackFace =
+                {
+                    FailOperation = StencilOperation.Keep,
+                    DepthFailOperation = StencilOperation.Keep,
+                    PassOperation = StencilOperation.Keep,
+                    Comparison = Comparison.Always
+                }
+            });
+
+            CreateFontsTexture();
+
+            if (_fontSampler == null)
+            {
+                Log.Error("[ImGuiDX11Impl] Failed to create device objects: font sampler is null.");
+                InvalidateDeviceObjects();
+                _deviceObjectsCreationFailed = true;
+                return false;
             }
-        });
 
-        CreateFontsTexture();
-
-        return true;
+            _deviceObjectsCreationFailed = false;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[ImGuiDX11Impl] Failed to create device objects: {ex}");
+            InvalidateDeviceObjects();
+            _deviceObjectsCreationFailed = true;
+            return false;
+        }
     }
 
     public static void InvalidateDeviceObjects()
     {
+        _deviceObjectsCreationFailed = false;
+
         if (_device == null)
         {
             return;
@@ -682,6 +707,11 @@ public static class ImGuiDX11Impl
 
     public static void NewFrame()
     {
+        if (_deviceObjectsCreationFailed)
+        {
+            return;
+        }
+
         if (_fontSampler == null)
         {
             CreateDeviceObjects();
@@ -690,6 +720,7 @@ public static class ImGuiDX11Impl
 
     internal static unsafe void Init(void* device, void* deviceContext)
     {
+        _deviceObjectsCreationFailed = false;
         ImGui.GetIO().BackendFlags = ImGui.GetIO().BackendFlags | ImGuiBackendFlags.RendererHasVtxOffset;
 
         _renderNamePtr = Marshal.StringToHGlobalAnsi("imgui_impl_dx11_c#");
