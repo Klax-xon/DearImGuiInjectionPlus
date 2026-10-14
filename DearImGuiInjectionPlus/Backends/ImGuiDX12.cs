@@ -12,6 +12,7 @@ namespace DearImGuiInjectionPlus.Backends;
 internal static class ImGuiDX12
 {
     private static IntPtr _windowHandle;
+    private static IntPtr _currentSwapChainPtr;
     private static SwapChain3 _currentSwapChain;
     private static CommandQueue _commandQueue;
 
@@ -40,6 +41,7 @@ internal static class ImGuiDX12
         IntPtr windowHandle = IntPtr.Zero;
         if (swapChainPtr != IntPtr.Zero)
         {
+            _currentSwapChainPtr = swapChainPtr;
             try
             {
                 Marshal.AddRef(swapChainPtr);
@@ -78,6 +80,7 @@ internal static class ImGuiDX12
             try
             {
                 _currentSwapChain = new SwapChain3(swapChainPtr);
+                GC.SuppressFinalize(_currentSwapChain);
             }
             catch (Exception ex)
             {
@@ -99,12 +102,33 @@ internal static class ImGuiDX12
         // (d) release GPU objects
         try { ImGuiDX12Impl.Shutdown(); } catch { }
 
+        InvalidateDevice();
+
+        _windowHandle = IntPtr.Zero;
+    }
+
+    private static void InvalidateDevice()
+    {
+        try { ImGuiDX12Impl.InvalidateDeviceObjects(); } catch { }
+
         try { _commandList?.Dispose(); } catch { }
+        _commandList = null;
+
         try { _rtvDescriptorHeap?.Dispose(); } catch { }
+        _rtvDescriptorHeap = null;
+
         try { _shaderDescriptorHeap?.Dispose(); } catch { }
+        _shaderDescriptorHeap = null;
+
         try { _fence?.Dispose(); } catch { }
+        _fence = null;
+
         try { _fenceEvent?.Dispose(); } catch { }
+        _fenceEvent = null;
+
         try { _commandQueue?.Dispose(); } catch { }
+        _commandQueue = null;
+
         if (_frameContexts != null)
         {
             for (int i = 0; i < _frameContexts.Length; i++)
@@ -115,26 +139,29 @@ internal static class ImGuiDX12
             }
             _frameContexts = null;
         }
-        try { _device?.Dispose(); } catch { }
 
-        _commandList = null;
-        _rtvDescriptorHeap = null;
-        _shaderDescriptorHeap = null;
-        _fence = null;
-        _fenceEvent = null;
-        _commandQueue = null;
+        try { _device?.Dispose(); } catch { }
         _device = null;
-        _currentSwapChain = null;
-        _windowHandle = IntPtr.Zero;
+
+        if (_currentSwapChain != null)
+        {
+            try { GC.SuppressFinalize(_currentSwapChain); } catch { }
+            _currentSwapChain = null;
+        }
+
+        _currentSwapChainPtr = IntPtr.Zero;
     }
 
     private static void WaitForGpuIdle()
     {
-        if (_commandQueue == null || _fence == null || _fenceEvent == null)
+        if (_commandQueue == null || _fence == null || _fenceEvent == null || _device == null || _device.IsDisposed)
             return;
 
         try
         {
+            if (_device.DeviceRemovedReason.Failure)
+                return;
+
             _fenceValue++;
             _commandQueue.Signal(_fence, _fenceValue);
             if (_fence.CompletedValue < _fenceValue)
@@ -175,36 +202,85 @@ internal static class ImGuiDX12
         if (RendererFinder.RendererFinder.IsShuttingDown)
             return;
 
-        _currentSwapChain = swapChain;
+        if (swapChain == null || swapChain.NativePointer == IntPtr.Zero)
+            return;
 
-        var windowHandle = swapChain?.Description.OutputHandle ?? IntPtr.Zero;
-        if (windowHandle != IntPtr.Zero && _windowHandle == IntPtr.Zero)
+        var windowHandle = swapChain.Description.OutputHandle;
+        if (!IsTargetWindowHandle(windowHandle))
+            return;
+
+        if (_currentSwapChainPtr == IntPtr.Zero)
         {
-            _windowHandle = windowHandle;
+            _currentSwapChainPtr = swapChain.NativePointer;
+        }
+        else if (swapChain.NativePointer != _currentSwapChainPtr)
+        {
+            return;
         }
 
-        // If command queue is not yet known, check CapturedCommandQueue or query swapchain
-        if (_commandQueue == null && swapChain != null)
+        _currentSwapChain = swapChain;
+
+        // Device loss detection
+        if (_device != null)
         {
-            var queuePtr = RendererFinder.Renderers.DX12Renderer.CapturedCommandQueue;
+            bool isDeviceLost = false;
+            try
+            {
+                if (_device.IsDisposed || _device.DeviceRemovedReason.Failure)
+                {
+                    isDeviceLost = true;
+                }
+            }
+            catch
+            {
+                isDeviceLost = true;
+            }
+
+            if (isDeviceLost)
+            {
+                Log.Warning("[ImGuiDX12] Device loss detected. Invalidating device objects.");
+                InvalidateDevice();
+            }
+        }
+
+        // If command queue is not yet known, check swapchain directly or CapturedCommandQueue
+        if (_commandQueue == null)
+        {
+            var queuePtr = RendererFinder.RendererFinder.QueryCommandQueueFromSwapChain(swapChain.NativePointer);
             if (queuePtr == IntPtr.Zero)
             {
-                queuePtr = RendererFinder.RendererFinder.QueryCommandQueueFromSwapChain(swapChain.NativePointer);
+                queuePtr = RendererFinder.Renderers.DX12Renderer.CapturedCommandQueue;
             }
             if (queuePtr != IntPtr.Zero)
             {
                 _commandQueue = new CommandQueue(queuePtr);
+                RendererFinder.Renderers.DX12Renderer.CapturedCommandQueue = queuePtr;
                 Log.Info($"[ImGuiDX12] Acquired CommandQueue on present: {queuePtr:X8}");
             }
         }
 
-        // Trigger initialization if command queue is known
+        // Trigger initialization or reinitialization if command queue is known
         if (!DearImGuiInjectionPlus.Initialized)
         {
             TryInitImGuiDX12();
         }
+        else if (_device == null && _commandQueue != null)
+        {
+            try
+            {
+                _currentSwapChain = swapChain;
+                _currentSwapChainPtr = swapChain.NativePointer;
+                InitImGuiDX12Internal(swapChain);
+                Log.Info($"[ImGuiDX12] Reinitialized DX12 backend on device {_device.NativePointer:X8}");
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[ImGuiDX12] Failed to reinitialize DX12 backend on new device: {ex.Message}");
+                return;
+            }
+        }
 
-        if (DearImGuiInjectionPlus.Initialized)
+        if (DearImGuiInjectionPlus.Initialized && _device != null)
         {
             RenderImGui(swapChain, syncInterval, flags, presentParameters);
         }
@@ -220,6 +296,7 @@ internal static class ImGuiDX12
 
         var windowHandle = _currentSwapChain.Description.OutputHandle;
         _windowHandle = windowHandle;
+        _currentSwapChainPtr = _currentSwapChain.NativePointer;
         Log.Info($"[ImGuiDX12] Starting DX12 initialization with window {windowHandle:X8} and CommandQueue {_commandQueue.NativePointer:X8}");
 
         // Step 1 & 2: Create ImGui Context and configure IO
@@ -250,6 +327,11 @@ internal static class ImGuiDX12
     private static unsafe void InitImGuiDX12Internal(SwapChain swapChain)
     {
         _device = swapChain.GetDevice<Device>();
+        if (_device.DeviceRemovedReason.Failure)
+        {
+            throw new Exception($"Device is in removed state: {_device.DeviceRemovedReason}");
+        }
+
         var swapChainDescription = swapChain.Description;
         int bufferCount = Math.Max(2, swapChainDescription.BufferCount);
 
@@ -349,15 +431,26 @@ internal static class ImGuiDX12
         if (_commandQueue == null || _frameContexts == null || _device == null || _rtvDescriptorHeap == null)
             return;
 
+        if (_currentSwapChainPtr != IntPtr.Zero && swapChain.NativePointer != _currentSwapChainPtr)
+            return;
+
+        var windowHandle = swapChain.Description.OutputHandle;
+        if (!IsTargetWindowHandle(windowHandle))
+            return;
+
+        // Device loss check before rendering
+        if (_device.IsDisposed || _device.DeviceRemovedReason.Failure)
+        {
+            Log.Warning("[ImGuiDX12] Device loss detected before render. Invalidating device objects.");
+            InvalidateDevice();
+            return;
+        }
+
         int frame = System.Threading.Interlocked.Increment(ref _renderFrameCount);
         bool verboseFrame = frame <= 5;
 
         try
         {
-            var windowHandle = swapChain.Description.OutputHandle;
-            if (!IsTargetWindowHandle(windowHandle))
-                return;
-
             int backBufferIndex = swapChain.CurrentBackBufferIndex;
             if (backBufferIndex >= _frameContexts.Length)
             {
@@ -409,7 +502,14 @@ internal static class ImGuiDX12
                 using (var backBufferResource = swapChain.GetBackBuffer<Resource>(backBufferIndex))
                 {
                     if (backBufferResource == null)
+                    {
+                        if (_device != null && (_device.IsDisposed || _device.DeviceRemovedReason.Failure))
+                        {
+                            Log.Warning("[ImGuiDX12] Device loss detected on GetBackBuffer. Invalidating device objects.");
+                            InvalidateDevice();
+                        }
                         return;
+                    }
 
                     var backBufferFormat = backBufferResource.Description.Format;
                     if (IsHdrFormat(backBufferFormat))
@@ -483,6 +583,22 @@ internal static class ImGuiDX12
         catch (Exception ex)
         {
             Log.Error($"[ImGuiDX12] Render error on frame {frame}: {ex}");
+            bool isLost = false;
+            try
+            {
+                if (_device != null && (_device.IsDisposed || _device.DeviceRemovedReason.Failure))
+                    isLost = true;
+            }
+            catch
+            {
+                isLost = true;
+            }
+
+            if (isLost)
+            {
+                Log.Warning("[ImGuiDX12] Device loss confirmed via DeviceRemovedReason during render. Invalidating device objects.");
+                InvalidateDevice();
+            }
         }
     }
 
@@ -494,7 +610,7 @@ internal static class ImGuiDX12
             {
                 _windowHandle = windowHandle;
             }
-            return true;
+            return windowHandle == _windowHandle;
         }
 
         return false;

@@ -10,6 +10,7 @@ namespace DearImGuiInjectionPlus.Backends;
 internal static class ImGuiDX11
 {
     private static IntPtr _windowHandle;
+    private static IntPtr _currentSwapChainPtr;
     private static Device _device;
     private static DeviceContext _deviceContext;
 
@@ -59,6 +60,7 @@ internal static class ImGuiDX11
             _device = null;
         }
 
+        _currentSwapChainPtr = IntPtr.Zero;
         _windowHandle = IntPtr.Zero;
     }
 
@@ -66,12 +68,43 @@ internal static class ImGuiDX11
     {
         try
         {
-            _deviceContext?.Flush();
+            if (_device != null && !_device.IsDisposed && _device.DeviceRemovedReason.Success)
+            {
+                _deviceContext?.Flush();
+            }
         }
         catch (Exception ex)
         {
             Log.Warning($"[ImGuiDX11] Error flushing DX11 device context: {ex.Message}");
         }
+    }
+
+    private static void InvalidateDevice()
+    {
+        try
+        {
+            ImGuiDX11Impl.InvalidateDeviceObjects();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[ImGuiDX11] Error invalidating device objects: {ex.Message}");
+        }
+
+        try
+        {
+            _deviceContext?.Dispose();
+        }
+        catch { }
+        _deviceContext = null;
+
+        try
+        {
+            _device?.Dispose();
+        }
+        catch { }
+        _device = null;
+
+        _currentSwapChainPtr = IntPtr.Zero;
     }
 
     private static unsafe void InitImGui(SwapChain swapChain, uint syncInterval, uint flags)
@@ -81,6 +114,7 @@ internal static class ImGuiDX11
         if (!DearImGuiInjectionPlus.Initialized)
         {
             _windowHandle = windowHandle;
+            _currentSwapChainPtr = swapChain.NativePointer;
             Log.Info($"[ImGuiDX11] Starting DX11 initialization with window handle {windowHandle:X8}");
 
             // Step 1 & 2: Create ImGui Context and configure IO
@@ -114,6 +148,11 @@ internal static class ImGuiDX11
     private static unsafe void InitImGuiDX11(SwapChain swapChain)
     {
         _device = swapChain.GetDevice<Device>();
+        if (_device.DeviceRemovedReason.Failure)
+        {
+            throw new Exception($"Device is in removed state: {_device.DeviceRemovedReason}");
+        }
+
         _deviceContext = _device.ImmediateContext;
 
         var backBufferFormat = Format.Unknown;
@@ -148,6 +187,11 @@ internal static class ImGuiDX11
 
     private static unsafe void RenderImGui(SwapChain swapChain, uint syncInterval, uint flags)
     {
+        if (swapChain == null || swapChain.NativePointer == IntPtr.Zero)
+        {
+            return;
+        }
+
         var windowHandle = swapChain.Description.OutputHandle;
 
         if (!IsTargetWindowHandle(windowHandle))
@@ -155,87 +199,161 @@ internal static class ImGuiDX11
             return;
         }
 
+        if (_currentSwapChainPtr == IntPtr.Zero)
+        {
+            _currentSwapChainPtr = swapChain.NativePointer;
+        }
+        else if (swapChain.NativePointer != _currentSwapChainPtr)
+        {
+            return;
+        }
+
+        // Device loss detection
+        if (_device != null)
+        {
+            bool isDeviceLost = false;
+            try
+            {
+                if (_device.IsDisposed || _device.DeviceRemovedReason.Failure)
+                {
+                    isDeviceLost = true;
+                }
+            }
+            catch
+            {
+                isDeviceLost = true;
+            }
+
+            if (isDeviceLost)
+            {
+                Log.Warning("[ImGuiDX11] Device loss detected. Invalidating device objects.");
+                InvalidateDevice();
+            }
+        }
+
+        if (_device == null)
+        {
+            try
+            {
+                InitImGuiDX11(swapChain);
+                _currentSwapChainPtr = swapChain.NativePointer;
+                Log.Info($"[ImGuiDX11] Successfully reinitialized DX11 backend on device {_device.NativePointer:X8}");
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[ImGuiDX11] Failed to reinitialize DX11 backend on new device: {ex.Message}");
+                return;
+            }
+        }
+
         if (_deviceContext == null || _device == null)
         {
             return;
         }
 
-        ImGuiDX11Impl.NewFrame();
-        DearImGuiInjectionPlus.NewFrame();
-
-        var drawData = ImGui.GetDrawData();
-        if (drawData.NativePtr != null)
+        try
         {
-            using (var old = ImGuiDX11Impl.BackupRenderState(_deviceContext))
+            ImGuiDX11Impl.NewFrame();
+            DearImGuiInjectionPlus.NewFrame();
+
+            var drawData = ImGui.GetDrawData();
+            if (drawData.NativePtr != null)
             {
-                Texture2D backBuffer = null;
-                RenderTargetView rtv = null;
-                try
+                using (var old = ImGuiDX11Impl.BackupRenderState(_deviceContext))
                 {
-                    backBuffer = swapChain.GetBackBuffer<Texture2D>(0);
-                    if (backBuffer == null)
-                        return;
-
-                    var bbFormat = backBuffer.Description.Format;
-                    if (IsHdrFormat(bbFormat))
-                    {
-                        DearImGuiTheme.ApplyGammaCorrection(true);
-                    }
-
-                    if (bbFormat == Format.R8G8B8A8_UNorm_SRgb)
-                    {
-                        try
-                        {
-                            var rtvDesc = new RenderTargetViewDescription
-                            {
-                                Format = Format.R8G8B8A8_UNorm,
-                                Dimension = RenderTargetViewDimension.Texture2D
-                            };
-                            rtv = new RenderTargetView(_device, backBuffer, rtvDesc);
-                        }
-                        catch
-                        {
-                            rtv = new RenderTargetView(_device, backBuffer);
-                        }
-                    }
-                    else if (bbFormat == Format.B8G8R8A8_UNorm_SRgb)
-                    {
-                        try
-                        {
-                            var rtvDesc = new RenderTargetViewDescription
-                            {
-                                Format = Format.B8G8R8A8_UNorm,
-                                Dimension = RenderTargetViewDimension.Texture2D
-                            };
-                            rtv = new RenderTargetView(_device, backBuffer, rtvDesc);
-                        }
-                        catch
-                        {
-                            rtv = new RenderTargetView(_device, backBuffer);
-                        }
-                    }
-                    else
-                    {
-                        rtv = new RenderTargetView(_device, backBuffer);
-                    }
-
-                    _deviceContext.OutputMerger.SetRenderTargets(rtv);
-
-                    ImGuiDX11Impl.RenderDrawData(drawData.NativePtr);
-                }
-                finally
-                {
+                    Texture2D backBuffer = null;
+                    RenderTargetView rtv = null;
                     try
                     {
-                        ImGuiDX11Impl.RestoreRenderState(_deviceContext, old);
+                        backBuffer = swapChain.GetBackBuffer<Texture2D>(0);
+                        if (backBuffer == null)
+                            return;
+
+                        var bbFormat = backBuffer.Description.Format;
+                        if (IsHdrFormat(bbFormat))
+                        {
+                            DearImGuiTheme.ApplyGammaCorrection(true);
+                        }
+
+                        if (bbFormat == Format.R8G8B8A8_UNorm_SRgb)
+                        {
+                            try
+                            {
+                                var rtvDesc = new RenderTargetViewDescription
+                                {
+                                    Format = Format.R8G8B8A8_UNorm,
+                                    Dimension = RenderTargetViewDimension.Texture2D
+                                };
+                                rtv = new RenderTargetView(_device, backBuffer, rtvDesc);
+                            }
+                            catch
+                            {
+                                rtv = new RenderTargetView(_device, backBuffer);
+                            }
+                        }
+                        else if (bbFormat == Format.B8G8R8A8_UNorm_SRgb)
+                        {
+                            try
+                            {
+                                var rtvDesc = new RenderTargetViewDescription
+                                {
+                                    Format = Format.B8G8R8A8_UNorm,
+                                    Dimension = RenderTargetViewDimension.Texture2D
+                                };
+                                rtv = new RenderTargetView(_device, backBuffer, rtvDesc);
+                            }
+                            catch
+                            {
+                                rtv = new RenderTargetView(_device, backBuffer);
+                            }
+                        }
+                        else
+                        {
+                            rtv = new RenderTargetView(_device, backBuffer);
+                        }
+
+                        _deviceContext.OutputMerger.SetRenderTargets(rtv);
+
+                        ImGuiDX11Impl.RenderDrawData(drawData.NativePtr);
                     }
                     finally
                     {
-                        rtv?.Dispose();
-                        backBuffer?.Dispose();
+                        try
+                        {
+                            ImGuiDX11Impl.RestoreRenderState(_deviceContext, old);
+                        }
+                        finally
+                        {
+                            rtv?.Dispose();
+                            backBuffer?.Dispose();
+                        }
                     }
                 }
             }
+        }
+        catch (SharpDX.SharpDXException sEx)
+        {
+            Log.Warning($"[ImGuiDX11] DirectX exception during render: {sEx.Message}");
+            bool isLost = false;
+            try
+            {
+                if (_device != null && (_device.IsDisposed || _device.DeviceRemovedReason.Failure))
+                    isLost = true;
+            }
+            catch
+            {
+                isLost = true;
+            }
+
+            if (isLost)
+            {
+                Log.Warning("[ImGuiDX11] Device loss confirmed via DeviceRemovedReason during render. Invalidating device objects.");
+                InvalidateDevice();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[ImGuiDX11] Error during render: {ex}");
         }
     }
 
@@ -247,7 +365,7 @@ internal static class ImGuiDX11
             {
                 _windowHandle = windowHandle;
             }
-            return true;
+            return windowHandle == _windowHandle;
         }
 
         return false;

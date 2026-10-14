@@ -745,6 +745,7 @@ public static class ImGuiDX12Impl
         }
 
         io.BackendFlags = io.BackendFlags & ~ImGuiBackendFlags.RendererHasVtxOffset;
+        SuppressFinalizers();
     }
 
     internal static void NewFrame()
