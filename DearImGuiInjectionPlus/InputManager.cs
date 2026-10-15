@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using DearImGuiInjectionPlus.Backends;
+using DearImGuiInjectionPlus.BepInEx;
 using DearImGuiInjectionPlus.Patches;
 using DearImGuiInjectionPlus.Windows;
 using ImGuiNET;
@@ -16,16 +17,15 @@ namespace DearImGuiInjectionPlus;
 internal static class InputManager
 {
     private static IntPtr _windowHandle = IntPtr.Zero;
-    private static User32.WndProcDelegate _wndProcDelegate;
-    private static IntPtr _originalWndProc = IntPtr.Zero;
-    private const int GWL_WNDPROC = -4;
-
+    private static readonly UIntPtr SubclassId = new(1);
+    private static readonly Comctl32.SubclassProc _subclassProcDelegate = SubclassHandler;
+    private static bool _isSubclassed;
 
     public static IntPtr WindowHandle => _windowHandle;
 
     internal static void Subclass(IntPtr hWnd)
     {
-        if (hWnd == IntPtr.Zero || _windowHandle == hWnd)
+        if (hWnd == IntPtr.Zero || (_windowHandle == hWnd && _isSubclassed))
             return;
 
         if (DearImGuiInjectionPlus.Context == IntPtr.Zero)
@@ -34,28 +34,90 @@ internal static class InputManager
             DearImGuiInjectionPlus.InitImGui();
         }
 
-        if (_originalWndProc != IntPtr.Zero && _windowHandle != IntPtr.Zero)
+        if (_windowHandle != IntPtr.Zero && _windowHandle != hWnd)
         {
             Unsubclass();
         }
 
+        bool wasSameWindow = _windowHandle == hWnd;
         _windowHandle = hWnd;
-        _wndProcDelegate = WndProcHandler;
-        _originalWndProc = User32.SetWindowLong(hWnd, GWL_WNDPROC, Marshal.GetFunctionPointerForDelegate(_wndProcDelegate));
 
-        Log.Info($"[InputManager] Subclassed window {hWnd:X8}. Input hook listening for Insert key.");
-        ImGuiWin32Impl.Init(hWnd);
+        // Initialize Win32 backend immediately so ImGui IO, viewport, and NewFrame() are ready
+        if (!wasSameWindow)
+        {
+            ImGuiWin32Impl.Init(hWnd);
+        }
+
+        // comctl32 SetWindowSubclass requires execution on the thread that created the window (Unity Main Thread)
+        InstallSubclass(hWnd);
+    }
+
+    private static void InstallSubclass(IntPtr hWnd)
+    {
+        void TrySubclass()
+        {
+            if (_isSubclassed || _windowHandle != hWnd)
+                return;
+
+            _isSubclassed = Comctl32.SetWindowSubclass(hWnd, _subclassProcDelegate, SubclassId, UIntPtr.Zero);
+            if (_isSubclassed)
+            {
+                Log.Info($"[InputManager] Subclassed window {hWnd:X8} via SetWindowSubclass on thread {Kernel32.GetCurrentThreadId()}. Input hook listening for {ToggleKey}.");
+            }
+            else
+            {
+                Log.Error($"[InputManager] Failed to subclass window {hWnd:X8} via SetWindowSubclass. Error: {Marshal.GetLastWin32Error()}");
+            }
+        }
+
+        uint windowThreadId = User32.GetWindowThreadProcessId(hWnd, out _);
+        uint currentThreadId = Kernel32.GetCurrentThreadId();
+
+        if (windowThreadId == currentThreadId || UnityMainThreadDispatcher.IsMainThread)
+        {
+            TrySubclass();
+        }
+        else
+        {
+            UnityMainThreadDispatcher.Enqueue(TrySubclass);
+        }
     }
 
     internal static void Unsubclass()
     {
-        if (_windowHandle != IntPtr.Zero && _originalWndProc != IntPtr.Zero)
+        if (_windowHandle != IntPtr.Zero)
         {
-            User32.SetWindowLong(_windowHandle, GWL_WNDPROC, _originalWndProc);
-            Log.Info($"[InputManager] Restored original WndProc on window {_windowHandle:X8}");
-            _originalWndProc = IntPtr.Zero;
+            var hWnd = _windowHandle;
             _windowHandle = IntPtr.Zero;
-            _wndProcDelegate = null;
+
+            void TryUnsubclass()
+            {
+                if (_isSubclassed)
+                {
+                    bool removed = Comctl32.RemoveWindowSubclass(hWnd, _subclassProcDelegate, SubclassId);
+                    if (removed)
+                    {
+                        Log.Info($"[InputManager] Removed window subclass on window {hWnd:X8}");
+                    }
+                    else
+                    {
+                        Log.Warning($"[InputManager] Failed to remove window subclass on window {hWnd:X8}. Error: {Marshal.GetLastWin32Error()}");
+                    }
+                    _isSubclassed = false;
+                }
+            }
+
+            uint windowThreadId = User32.GetWindowThreadProcessId(hWnd, out _);
+            uint currentThreadId = Kernel32.GetCurrentThreadId();
+
+            if (windowThreadId == currentThreadId || UnityMainThreadDispatcher.IsMainThread)
+            {
+                TryUnsubclass();
+            }
+            else
+            {
+                UnityMainThreadDispatcher.Enqueue(TryUnsubclass);
+            }
         }
 
         if (!RendererFinder.RendererFinder.IsShuttingDown)
@@ -70,75 +132,98 @@ internal static class InputManager
 
     public static unsafe IntPtr WndProcHandler(IntPtr hWnd, WindowMessage msg, IntPtr wParam, IntPtr lParam)
     {
-        if (RendererFinder.RendererFinder.IsShuttingDown)
-        {
-            return _originalWndProc != IntPtr.Zero
-                ? User32.CallWindowProc(_originalWndProc, hWnd, msg, wParam, lParam)
-                : IntPtr.Zero;
-        }
+        return SubclassHandler(hWnd, msg, wParam, lParam, SubclassId, UIntPtr.Zero);
+    }
 
-        // 1. Always allow Alt+Enter (fullscreen toggle) through to Unity & Windows
-        if ((msg == WindowMessage.WM_SYSKEYDOWN || msg == WindowMessage.WM_SYSKEYUP) && (int)wParam == 0x0D)
+    public static unsafe IntPtr SubclassHandler(IntPtr hWnd, WindowMessage msg, IntPtr wParam, IntPtr lParam, UIntPtr uIdSubclass, UIntPtr dwRefData)
+    {
+        try
         {
-            return User32.CallWindowProc(_originalWndProc, hWnd, msg, wParam, lParam);
-        }
-
-        // 2. Intercept Menu Toggle Key (Insert)
-        if (msg == WindowMessage.WM_KEYDOWN && (int)wParam == (int)ToggleKey)
-        {
-            DearImGuiInjectionPlus.ToggleCursorVisibility();
-            return IntPtr.Zero; // Swallow toggle key
-        }
-        if (msg == WindowMessage.WM_KEYUP && (int)wParam == (int)ToggleKey)
-        {
-            return IntPtr.Zero; // Swallow toggle key release
-        }
-
-        // 3. When menu is CLOSED: pass all input directly to the game
-        if (!DearImGuiInjectionPlus.IsCursorVisible)
-        {
-            return User32.CallWindowProc(_originalWndProc, hWnd, msg, wParam, lParam);
-        }
-
-        // 4. When menu is OPEN: Feed ImGui first
-        ImGuiWin32Impl.WndProcHandler(hWnd, msg, wParam, lParam);
-
-        // Prevent cursor fighting with Unity
-        if (msg == WindowMessage.WM_SETCURSOR)
-        {
-            return (IntPtr)1;
-        }
-
-        // Swallow Raw Input (WM_INPUT = 0x00FF)
-        // This stops Unity's camera from rotating while moving the mouse over ImGui
-        if ((int)msg == 0x00FF || msg == WindowMessage.WM_INPUT)
-        {
-            // Let Windows clean up raw input buffers, but DO NOT forward to Unity
-            return User32.DefWindowProc(hWnd, msg, wParam, lParam);
-        }
-
-        // Swallow mouse messages (clicks, moves, wheels) if blocking all inputs or ImGui wants mouse capture
-        if (IsMouseMessage(msg))
-        {
-            if (DearImGuiInjectionPlus.BlockAllInputsWhenOpen || DearImGuiInjectionPlus.WantCaptureMouse)
+            // Automatically unhook when the window is destroyed
+            if (msg == WindowMessage.WM_NCDESTROY)
             {
-                return IntPtr.Zero;
+                Comctl32.RemoveWindowSubclass(hWnd, _subclassProcDelegate, SubclassId);
+                _isSubclassed = false;
+                if (_windowHandle == hWnd)
+                {
+                    _windowHandle = IntPtr.Zero;
+                }
+                return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
             }
-            return User32.CallWindowProc(_originalWndProc, hWnd, msg, wParam, lParam);
-        }
 
-        // Swallow keyboard messages (letters, numbers, modifiers) if blocking all inputs or ImGui wants keyboard capture
-        if (IsKeyboardMessage(msg))
-        {
-            if (DearImGuiInjectionPlus.BlockAllInputsWhenOpen || DearImGuiInjectionPlus.WantCaptureKeyboard)
+            if (RendererFinder.RendererFinder.IsShuttingDown)
             {
-                return IntPtr.Zero;
+                return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
             }
-            return User32.CallWindowProc(_originalWndProc, hWnd, msg, wParam, lParam);
-        }
 
-        // Forward non-input window events (WM_PAINT, WM_SIZE, WM_ACTIVATE, etc.)
-        return User32.CallWindowProc(_originalWndProc, hWnd, msg, wParam, lParam);
+            // 1. Always allow Alt+Enter (fullscreen toggle) through to Unity & Windows
+            if ((msg == WindowMessage.WM_SYSKEYDOWN || msg == WindowMessage.WM_SYSKEYUP) && (int)wParam == 0x0D)
+            {
+                return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
+            }
+
+            // 2. Intercept Menu Toggle Key (Insert)
+            if (msg == WindowMessage.WM_KEYDOWN && (int)wParam == (int)ToggleKey)
+            {
+                DearImGuiInjectionPlus.ToggleCursorVisibility();
+                return IntPtr.Zero; // Swallow toggle key
+            }
+            if (msg == WindowMessage.WM_KEYUP && (int)wParam == (int)ToggleKey)
+            {
+                return IntPtr.Zero; // Swallow toggle key release
+            }
+
+            // 3. When menu is CLOSED: pass all input directly to the game
+            if (!DearImGuiInjectionPlus.IsCursorVisible)
+            {
+                return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
+            }
+
+            // 4. When menu is OPEN: Feed ImGui first
+            ImGuiWin32Impl.WndProcHandler(hWnd, msg, wParam, lParam);
+
+            // Prevent cursor fighting with Unity
+            if (msg == WindowMessage.WM_SETCURSOR)
+            {
+                return (IntPtr)1;
+            }
+
+            // Swallow Raw Input (WM_INPUT = 0x00FF)
+            // This stops Unity's camera from rotating while moving the mouse over ImGui
+            if ((int)msg == 0x00FF || msg == WindowMessage.WM_INPUT)
+            {
+                // Let Windows clean up raw input buffers, but DO NOT forward to Unity
+                return User32.DefWindowProc(hWnd, msg, wParam, lParam);
+            }
+
+            // Swallow mouse messages (clicks, moves, wheels) if blocking all inputs or ImGui wants mouse capture
+            if (IsMouseMessage(msg))
+            {
+                if (DearImGuiInjectionPlus.BlockAllInputsWhenOpen || DearImGuiInjectionPlus.WantCaptureMouse)
+                {
+                    return IntPtr.Zero;
+                }
+                return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
+            }
+
+            // Swallow keyboard messages (letters, numbers, modifiers) if blocking all inputs or ImGui wants keyboard capture
+            if (IsKeyboardMessage(msg))
+            {
+                if (DearImGuiInjectionPlus.BlockAllInputsWhenOpen || DearImGuiInjectionPlus.WantCaptureKeyboard)
+                {
+                    return IntPtr.Zero;
+                }
+                return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
+            }
+
+            // Forward non-input window events (WM_PAINT, WM_SIZE, WM_ACTIVATE, etc.)
+            return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[InputManager] Error in SubclassHandler: {ex}");
+            return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
+        }
     }
 
     private static bool IsMouseMessage(WindowMessage msg) => msg switch

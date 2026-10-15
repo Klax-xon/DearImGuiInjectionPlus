@@ -105,6 +105,9 @@ public static class Kernel32
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool QueryPerformanceFrequency(out long frequency);
+
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentThreadId();
 }
 
 [StructLayout(LayoutKind.Explicit)]

@@ -832,6 +832,9 @@ public static class User32
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool ClipCursor(IntPtr lpRect);
 
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT
     {
