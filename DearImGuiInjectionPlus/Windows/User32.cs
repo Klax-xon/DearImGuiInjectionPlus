@@ -774,6 +774,12 @@ public static class User32
     [DllImport("USER32.dll")]
     public static extern short GetKeyState(VirtualKey nVirtKey);
 
+    [DllImport("user32.dll")]
+    public static extern short GetAsyncKeyState(VirtualKey vKey);
+
+    [DllImport("user32.dll")]
+    public static extern short GetAsyncKeyState(int vKey);
+
     [DllImport("user32.dll", SetLastError = false)]
     public static extern IntPtr GetMessageExtraInfo();
 

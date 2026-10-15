@@ -199,6 +199,12 @@ internal static class InputManager
             // 4. When menu is OPEN: Feed ImGui first
             ImGuiWin32Impl.WndProcHandler(hWnd, msg, wParam, lParam);
 
+            // INP-08: Respond to WM_UNICHAR query probe
+            if (msg == WindowMessage.WM_UNICHAR && (int)wParam == 0xFFFF)
+            {
+                return (IntPtr)1;
+            }
+
             // INP-07: Prevent cursor fighting with Unity for client area; allow OS cursors (sizing, borders) in non-client area
             if (msg == WindowMessage.WM_SETCURSOR)
             {
@@ -249,6 +255,13 @@ internal static class InputManager
 
                 if (DearImGuiInjectionPlus.BlockAllInputsWhenOpen || DearImGuiInjectionPlus.WantCaptureKeyboard)
                 {
+                    // INP-08: Route IME system messages to DefWindowProc so the OS IME composition UI
+                    // renders properly without leaking input events to the Unity game engine.
+                    if (IsImeSystemMessage(msg))
+                    {
+                        return User32.DefWindowProc(hWnd, msg, wParam, lParam);
+                    }
+
                     return IntPtr.Zero;
                 }
                 return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
@@ -324,7 +337,7 @@ internal static class InputManager
             if (vk == toggle)
                 continue;
 
-            if ((User32.GetKeyState((User32.VirtualKey)vk) & 0x8000) != 0)
+            if ((User32.GetAsyncKeyState((User32.VirtualKey)vk) & 0x8000) != 0)
             {
                 SetKeyDown(vk);
             }
@@ -473,7 +486,28 @@ internal static class InputManager
         WindowMessage.WM_KEYDOWN or WindowMessage.WM_KEYUP or
         WindowMessage.WM_CHAR or WindowMessage.WM_DEADCHAR or
         WindowMessage.WM_SYSKEYDOWN or WindowMessage.WM_SYSKEYUP or
-        WindowMessage.WM_SYSCHAR or WindowMessage.WM_SYSDEADCHAR => true,
+        WindowMessage.WM_SYSCHAR or WindowMessage.WM_SYSDEADCHAR or
+        WindowMessage.WM_UNICHAR or
+        WindowMessage.WM_IME_SETCONTEXT or WindowMessage.WM_IME_NOTIFY or
+        WindowMessage.WM_IME_CONTROL or WindowMessage.WM_IME_COMPOSITION or
+        WindowMessage.WM_IME_CHAR or WindowMessage.WM_IME_STARTCOMPOSITION or
+        WindowMessage.WM_IME_ENDCOMPOSITION or WindowMessage.WM_IME_COMPOSITIONFULL or
+        WindowMessage.WM_IME_SELECT or WindowMessage.WM_IME_REQUEST or
+        WindowMessage.WM_IME_KEYDOWN or WindowMessage.WM_IME_KEYUP => true,
+        _ => false
+    };
+
+    private static bool IsImeSystemMessage(WindowMessage msg) => msg switch
+    {
+        WindowMessage.WM_IME_SETCONTEXT or
+        WindowMessage.WM_IME_NOTIFY or
+        WindowMessage.WM_IME_CONTROL or
+        WindowMessage.WM_IME_COMPOSITION or
+        WindowMessage.WM_IME_STARTCOMPOSITION or
+        WindowMessage.WM_IME_ENDCOMPOSITION or
+        WindowMessage.WM_IME_COMPOSITIONFULL or
+        WindowMessage.WM_IME_SELECT or
+        WindowMessage.WM_IME_REQUEST => true,
         _ => false
     };
 

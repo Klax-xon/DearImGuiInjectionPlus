@@ -197,8 +197,11 @@ public static unsafe class ImGuiWin32Impl
         _windowHandle = IntPtr.Zero;
     }
 
-    static bool ImGui_ImplWin32_UpdateMouseCursor()
+    internal static bool ImGui_ImplWin32_UpdateMouseCursor()
     {
+        if (ImGui.GetCurrentContext() == IntPtr.Zero)
+            return false;
+
         var io = ImGui.GetIO();
         if ((io.ConfigFlags & ImGuiConfigFlags.NoMouseCursorChange) != 0)
             return false;
@@ -242,7 +245,9 @@ public static unsafe class ImGuiWin32Impl
 
     static bool IsVkDown(User32.VirtualKey vk)
     {
-        return (User32.GetKeyState(vk) & 0x8000) != 0;
+        // INP-04: GetAsyncKeyState queries the global hardware keyboard state rather than
+        // the calling thread's message queue keyboard state, making it safe to call across threads.
+        return (User32.GetAsyncKeyState(vk) & 0x8000) != 0;
     }
 
     static void ImGui_ImplWin32_AddKeyEvent(ImGuiKey key, bool down, User32.VirtualKey native_keycode, int native_scancode = -1)
@@ -376,11 +381,11 @@ public static unsafe class ImGuiWin32Impl
         ImGui_ImplWin32_ProcessKeyEventsWorkarounds();
 
         // Update OS mouse cursor with the cursor requested by imgui
+        // INP-04: Handled strictly inside WndProcHandler on WM_SETCURSOR to respect Win32 thread affinity.
         ImGuiMouseCursor mouse_cursor = io.MouseDrawCursor ? ImGuiMouseCursor.None : ImGui.GetMouseCursor();
         if (_lastMouseCursor != mouse_cursor)
         {
             _lastMouseCursor = mouse_cursor;
-            ImGui_ImplWin32_UpdateMouseCursor();
         }
 
         // Update game controllers (if enabled and available)
@@ -714,6 +719,58 @@ public static unsafe class ImGuiWin32Impl
                 }
                 return IntPtr.Zero;
             case WindowMessage.WM_SETCURSOR:
+                // INP-04: Update mouse cursor strictly on the main UI thread in response to WM_SETCURSOR
+                const ushort HTCLIENT = 1;
+                if (LOWORD(lParam) == HTCLIENT && ImGui_ImplWin32_UpdateMouseCursor())
+                    return (IntPtr)1;
+                return IntPtr.Zero;
+            case WindowMessage.WM_UNICHAR:
+                // INP-08: Support WM_UNICHAR character input
+                if ((int)wParam == 0xFFFF) // UNICODE_NOCHAR
+                    return (IntPtr)1;
+                if ((int)wParam > 0 && (int)wParam < 0x10000)
+                {
+                    _eventQueue.Enqueue(InputEvent.CreateChar((ushort)wParam));
+                }
+                else if ((int)wParam >= 0x10000 && (int)wParam <= 0x10FFFF)
+                {
+                    int codePoint = (int)wParam - 0x10000;
+                    ushort highSurrogate = (ushort)((codePoint >> 10) + 0xD800);
+                    ushort lowSurrogate = (ushort)((codePoint & 0x3FF) + 0xDC00);
+                    _eventQueue.Enqueue(InputEvent.CreateChar(highSurrogate));
+                    _eventQueue.Enqueue(InputEvent.CreateChar(lowSurrogate));
+                }
+                return IntPtr.Zero;
+            case WindowMessage.WM_IME_CHAR:
+                // INP-08: Forward IME character events to ImGui
+                if (User32.IsWindowUnicode(hwnd))
+                {
+                    if ((int)wParam > 0 && (int)wParam < 0x10000)
+                        _eventQueue.Enqueue(InputEvent.CreateChar((ushort)wParam));
+                }
+                else
+                {
+                    int val = (int)wParam;
+                    byte[] bytes = val > 0xFF
+                        ? new byte[2] { (byte)(val >> 8), (byte)(val & 0xFF) }
+                        : new byte[1] { (byte)val };
+
+                    const int wideCharCapacity = 2;
+                    var wideBuffer = Marshal.AllocHGlobal(wideCharCapacity * sizeof(char));
+                    try
+                    {
+                        int charsWritten = Kernel32.MultiByteToWideChar(Kernel32.CP_ACP, Kernel32.MB_PRECOMPOSED, bytes, bytes.Length, wideBuffer, wideCharCapacity);
+                        for (int i = 0; i < charsWritten; i++)
+                        {
+                            char c = *((char*)wideBuffer + i);
+                            _eventQueue.Enqueue(InputEvent.CreateChar(c));
+                        }
+                    }
+                    finally
+                    {
+                        Marshal.FreeHGlobal(wideBuffer);
+                    }
+                }
                 return IntPtr.Zero;
             case WindowMessage.WM_DEVICECHANGE:
                 const int DBT_DEVNODES_CHANGED = 0x0007;
