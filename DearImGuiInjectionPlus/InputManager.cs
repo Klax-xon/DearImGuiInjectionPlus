@@ -21,6 +21,12 @@ internal static class InputManager
     private static readonly Comctl32.SubclassProc _subclassProcDelegate = SubclassHandler;
     private static bool _isSubclassed;
 
+    // Bitmask for tracking keys/buttons (0-255) depressed when overlay became visible (INP-02)
+    private static ulong _downKeys0;
+    private static ulong _downKeys1;
+    private static ulong _downKeys2;
+    private static ulong _downKeys3;
+
     public static IntPtr WindowHandle => _windowHandle;
 
     internal static void Subclass(IntPtr hWnd)
@@ -94,6 +100,11 @@ internal static class InputManager
             {
                 if (_isSubclassed)
                 {
+                    ClearAllDownKeys();
+                    if (User32.GetCapture() != IntPtr.Zero)
+                    {
+                        User32.ReleaseCapture();
+                    }
                     bool removed = Comctl32.RemoveWindowSubclass(hWnd, _subclassProcDelegate, SubclassId);
                     if (removed)
                     {
@@ -144,6 +155,7 @@ internal static class InputManager
             {
                 Comctl32.RemoveWindowSubclass(hWnd, _subclassProcDelegate, SubclassId);
                 _isSubclassed = false;
+                ClearAllDownKeys();
                 if (_windowHandle == hWnd)
                 {
                     _windowHandle = IntPtr.Zero;
@@ -163,10 +175,15 @@ internal static class InputManager
             }
 
             // 2. Intercept Menu Toggle Key (Insert)
+            // INP-07: Check bit 30 of lParam (previous key state: 0 = first press, 1 = repeat) to ignore auto-repeat
             if (msg == WindowMessage.WM_KEYDOWN && (int)wParam == (int)ToggleKey)
             {
-                DearImGuiInjectionPlus.ToggleCursorVisibility();
-                return IntPtr.Zero; // Swallow toggle key
+                bool isRepeat = ((long)lParam & (1L << 30)) != 0;
+                if (!isRepeat)
+                {
+                    DearImGuiInjectionPlus.ToggleCursorVisibility();
+                }
+                return IntPtr.Zero; // Swallow toggle key and auto-repeats
             }
             if (msg == WindowMessage.WM_KEYUP && (int)wParam == (int)ToggleKey)
             {
@@ -182,10 +199,15 @@ internal static class InputManager
             // 4. When menu is OPEN: Feed ImGui first
             ImGuiWin32Impl.WndProcHandler(hWnd, msg, wParam, lParam);
 
-            // Prevent cursor fighting with Unity
+            // INP-07: Prevent cursor fighting with Unity for client area; allow OS cursors (sizing, borders) in non-client area
             if (msg == WindowMessage.WM_SETCURSOR)
             {
-                return (IntPtr)1;
+                const ushort HTCLIENT = 1;
+                if (ImGuiWin32Impl.LOWORD(lParam) == HTCLIENT)
+                {
+                    return (IntPtr)1;
+                }
+                return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
             }
 
             // Swallow Raw Input (WM_INPUT = 0x00FF)
@@ -199,6 +221,13 @@ internal static class InputManager
             // Swallow mouse messages (clicks, moves, wheels) if blocking all inputs or ImGui wants mouse capture
             if (IsMouseMessage(msg))
             {
+                // INP-02: Permit mouse button UP events through if the button was depressed when overlay opened
+                var mouseUpKey = GetMouseUpVirtualKey(msg, wParam);
+                if (mouseUpKey.HasValue && CheckAndClearKey((int)mouseUpKey.Value))
+                {
+                    return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
+                }
+
                 if (DearImGuiInjectionPlus.BlockAllInputsWhenOpen || DearImGuiInjectionPlus.WantCaptureMouse)
                 {
                     return IntPtr.Zero;
@@ -209,6 +238,15 @@ internal static class InputManager
             // Swallow keyboard messages (letters, numbers, modifiers) if blocking all inputs or ImGui wants keyboard capture
             if (IsKeyboardMessage(msg))
             {
+                // INP-02: Permit key UP events through if the key was depressed when overlay opened
+                if (msg == WindowMessage.WM_KEYUP || msg == WindowMessage.WM_SYSKEYUP)
+                {
+                    if (CheckAndClearKey((int)wParam))
+                    {
+                        return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
+                    }
+                }
+
                 if (DearImGuiInjectionPlus.BlockAllInputsWhenOpen || DearImGuiInjectionPlus.WantCaptureKeyboard)
                 {
                     return IntPtr.Zero;
@@ -223,6 +261,199 @@ internal static class InputManager
         {
             Log.Error($"[InputManager] Error in SubclassHandler: {ex}");
             return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
+        }
+    }
+
+    private static void SetKeyDown(int vk)
+    {
+        if (vk is < 0 or > 255) return;
+        int idx = vk >> 6;
+        ulong bit = 1UL << (vk & 63);
+        switch (idx)
+        {
+            case 0: _downKeys0 |= bit; break;
+            case 1: _downKeys1 |= bit; break;
+            case 2: _downKeys2 |= bit; break;
+            case 3: _downKeys3 |= bit; break;
+        }
+    }
+
+    private static void ClearKeyDown(int vk)
+    {
+        if (vk is < 0 or > 255) return;
+        int idx = vk >> 6;
+        ulong bit = 1UL << (vk & 63);
+        switch (idx)
+        {
+            case 0: _downKeys0 &= ~bit; break;
+            case 1: _downKeys1 &= ~bit; break;
+            case 2: _downKeys2 &= ~bit; break;
+            case 3: _downKeys3 &= ~bit; break;
+        }
+    }
+
+    private static bool IsKeyDown(int vk)
+    {
+        if (vk is < 0 or > 255) return false;
+        int idx = vk >> 6;
+        ulong bit = 1UL << (vk & 63);
+        return idx switch
+        {
+            0 => (_downKeys0 & bit) != 0,
+            1 => (_downKeys1 & bit) != 0,
+            2 => (_downKeys2 & bit) != 0,
+            3 => (_downKeys3 & bit) != 0,
+            _ => false
+        };
+    }
+
+    private static bool HasAnyDownKeys() =>
+        (_downKeys0 | _downKeys1 | _downKeys2 | _downKeys3) != 0;
+
+    private static void ClearAllDownKeys()
+    {
+        _downKeys0 = _downKeys1 = _downKeys2 = _downKeys3 = 0;
+    }
+
+    private static void CaptureDepressedKeys()
+    {
+        ClearAllDownKeys();
+        int toggle = (int)ToggleKey;
+        for (int vk = 1; vk < 256; vk++)
+        {
+            if (vk == toggle)
+                continue;
+
+            if ((User32.GetKeyState((User32.VirtualKey)vk) & 0x8000) != 0)
+            {
+                SetKeyDown(vk);
+            }
+        }
+    }
+
+    private static bool CheckAndClearKey(int vk)
+    {
+        bool down = IsKeyDown(vk);
+        if (vk == (int)VirtualKey.Shift)
+        {
+            down |= IsKeyDown((int)VirtualKey.LeftShift) || IsKeyDown((int)VirtualKey.RightShift);
+            ClearKeyDown((int)VirtualKey.Shift);
+            ClearKeyDown((int)VirtualKey.LeftShift);
+            ClearKeyDown((int)VirtualKey.RightShift);
+        }
+        else if (vk is (int)VirtualKey.LeftShift or (int)VirtualKey.RightShift)
+        {
+            down |= IsKeyDown((int)VirtualKey.Shift);
+            ClearKeyDown((int)VirtualKey.Shift);
+            ClearKeyDown((int)VirtualKey.LeftShift);
+            ClearKeyDown((int)VirtualKey.RightShift);
+        }
+        else if (vk == (int)VirtualKey.Control)
+        {
+            down |= IsKeyDown((int)VirtualKey.LeftControl) || IsKeyDown((int)VirtualKey.RightControl);
+            ClearKeyDown((int)VirtualKey.Control);
+            ClearKeyDown((int)VirtualKey.LeftControl);
+            ClearKeyDown((int)VirtualKey.RightControl);
+        }
+        else if (vk is (int)VirtualKey.LeftControl or (int)VirtualKey.RightControl)
+        {
+            down |= IsKeyDown((int)VirtualKey.Control);
+            ClearKeyDown((int)VirtualKey.Control);
+            ClearKeyDown((int)VirtualKey.LeftControl);
+            ClearKeyDown((int)VirtualKey.RightControl);
+        }
+        else if (vk == (int)VirtualKey.Menu)
+        {
+            down |= IsKeyDown((int)VirtualKey.LeftMenu) || IsKeyDown((int)VirtualKey.RightMenu);
+            ClearKeyDown((int)VirtualKey.Menu);
+            ClearKeyDown((int)VirtualKey.LeftMenu);
+            ClearKeyDown((int)VirtualKey.RightMenu);
+        }
+        else if (vk is (int)VirtualKey.LeftMenu or (int)VirtualKey.RightMenu)
+        {
+            down |= IsKeyDown((int)VirtualKey.Menu);
+            ClearKeyDown((int)VirtualKey.Menu);
+            ClearKeyDown((int)VirtualKey.LeftMenu);
+            ClearKeyDown((int)VirtualKey.RightMenu);
+        }
+        else
+        {
+            ClearKeyDown(vk);
+        }
+        return down;
+    }
+
+    private static VirtualKey? GetMouseUpVirtualKey(WindowMessage msg, IntPtr wParam) => msg switch
+    {
+        WindowMessage.WM_LBUTTONUP => VirtualKey.LeftButton,
+        WindowMessage.WM_RBUTTONUP => VirtualKey.RightButton,
+        WindowMessage.WM_MBUTTONUP => VirtualKey.MiddleButton,
+        WindowMessage.WM_XBUTTONUP => ImGuiWin32Impl.GET_XBUTTON_WPARAM(wParam) == 1
+            ? VirtualKey.ExtraButton1
+            : VirtualKey.ExtraButton2,
+        _ => null
+    };
+
+    private static void ReleaseRemainingDepressedKeys(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero || !HasAnyDownKeys())
+        {
+            ClearAllDownKeys();
+            return;
+        }
+
+        try
+        {
+            for (int vk = 1; vk < 256; vk++)
+            {
+                if (!IsKeyDown(vk))
+                    continue;
+
+                switch ((VirtualKey)vk)
+                {
+                    case VirtualKey.LeftButton:
+                        User32.PostMessage(hWnd, WindowMessage.WM_LBUTTONUP, IntPtr.Zero, IntPtr.Zero);
+                        break;
+                    case VirtualKey.RightButton:
+                        User32.PostMessage(hWnd, WindowMessage.WM_RBUTTONUP, IntPtr.Zero, IntPtr.Zero);
+                        break;
+                    case VirtualKey.MiddleButton:
+                        User32.PostMessage(hWnd, WindowMessage.WM_MBUTTONUP, IntPtr.Zero, IntPtr.Zero);
+                        break;
+                    case VirtualKey.ExtraButton1:
+                        User32.PostMessage(hWnd, WindowMessage.WM_XBUTTONUP, (IntPtr)(1 << 16), IntPtr.Zero);
+                        break;
+                    case VirtualKey.ExtraButton2:
+                        User32.PostMessage(hWnd, WindowMessage.WM_XBUTTONUP, (IntPtr)(2 << 16), IntPtr.Zero);
+                        break;
+                    case VirtualKey.Shift:
+                    case VirtualKey.LeftShift:
+                    case VirtualKey.RightShift:
+                        User32.PostMessage(hWnd, WindowMessage.WM_KEYUP, (IntPtr)vk, (IntPtr)0xC0000001L);
+                        break;
+                    case VirtualKey.Control:
+                    case VirtualKey.LeftControl:
+                    case VirtualKey.RightControl:
+                        User32.PostMessage(hWnd, WindowMessage.WM_KEYUP, (IntPtr)vk, (IntPtr)0xC0000001L);
+                        break;
+                    case VirtualKey.Menu:
+                    case VirtualKey.LeftMenu:
+                    case VirtualKey.RightMenu:
+                        User32.PostMessage(hWnd, WindowMessage.WM_SYSKEYUP, (IntPtr)vk, (IntPtr)0xC0000001L);
+                        break;
+                    default:
+                        User32.PostMessage(hWnd, WindowMessage.WM_KEYUP, (IntPtr)vk, (IntPtr)0xC0000001L);
+                        break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[InputManager] Error synthesizing key releases: {ex.Message}");
+        }
+        finally
+        {
+            ClearAllDownKeys();
         }
     }
 
@@ -261,6 +492,8 @@ internal static class InputManager
         {
             if (visible)
             {
+                CaptureDepressedKeys();
+
                 if (Cursor.lockState != CursorLockMode.None)
                 {
                     CursorLockStatePatch.DesiredGameLockState = Cursor.lockState;
@@ -285,6 +518,15 @@ internal static class InputManager
             }
             else
             {
+                // INP-07: Release mouse capture if held mid-drag
+                if (User32.GetCapture() != IntPtr.Zero)
+                {
+                    User32.ReleaseCapture();
+                }
+
+                // INP-02: Synthesize release events for keys/buttons still marked down
+                ReleaseRemainingDepressedKeys(_windowHandle);
+
                 try
                 {
                     CursorLockStatePatch.SuppressStateCapture = true;

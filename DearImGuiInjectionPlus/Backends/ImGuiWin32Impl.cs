@@ -100,9 +100,19 @@ public static unsafe class ImGuiWin32Impl
         {
             if (_mouseButtonsDown != 0)
             {
+                for (int i = 0; i < 5; i++)
+                {
+                    if ((_mouseButtonsDown & (1 << i)) != 0)
+                    {
+                        _eventQueue.Enqueue(InputEvent.CreateMouseButton(i, false, ImGuiMouseSource.Mouse));
+                    }
+                }
                 _mouseButtonsDown = 0;
-                if (_windowHandle != IntPtr.Zero && User32.GetCapture() == _windowHandle)
-                    User32.ReleaseCapture();
+            }
+
+            if (User32.GetCapture() != IntPtr.Zero)
+            {
+                User32.ReleaseCapture();
             }
         }
         _eventQueue.Enqueue(InputEvent.CreateCursorVisibility(visible, mouseX, mouseY));
