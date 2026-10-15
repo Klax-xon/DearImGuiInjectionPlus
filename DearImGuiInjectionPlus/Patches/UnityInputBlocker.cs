@@ -6,13 +6,45 @@ namespace DearImGuiInjectionPlus.Patches
     [HarmonyPatch]
     internal static class UnityInputBlocker
     {
+        internal static Vector3 LastMousePosition = Vector3.zero;
+
+        private static bool ShouldBlockMouse()
+        {
+            if (!DearImGuiInjectionPlus.IsCursorVisible)
+            {
+                return false;
+            }
+
+            if (!DearImGuiInjectionPlus.BlockAllInputsWhenOpen)
+            {
+                return DearImGuiInjectionPlus.WantCaptureMouse;
+            }
+
+            return true;
+        }
+
+        private static bool ShouldBlockKeyboard()
+        {
+            if (!DearImGuiInjectionPlus.IsCursorVisible)
+            {
+                return false;
+            }
+
+            if (!DearImGuiInjectionPlus.BlockAllInputsWhenOpen)
+            {
+                return DearImGuiInjectionPlus.WantCaptureKeyboard;
+            }
+
+            return true;
+        }
+
         // 1. Zero out mouse axes (stops camera scripts polling Input.GetAxis)
         [HarmonyPatch(typeof(Input), nameof(Input.GetAxis))]
         [HarmonyPatch(typeof(Input), nameof(Input.GetAxisRaw))]
         [HarmonyPrefix]
         private static bool BlockAxis(ref float __result)
         {
-            if (DearImGuiInjectionPlus.IsCursorVisible)
+            if (ShouldBlockMouse() || ShouldBlockKeyboard())
             {
                 __result = 0f;
                 return false;
@@ -27,7 +59,7 @@ namespace DearImGuiInjectionPlus.Patches
         [HarmonyPrefix]
         private static bool BlockKey(ref bool __result)
         {
-            if (DearImGuiInjectionPlus.IsCursorVisible)
+            if (ShouldBlockKeyboard() || ShouldBlockMouse())
             {
                 __result = false;
                 return false;
@@ -42,7 +74,7 @@ namespace DearImGuiInjectionPlus.Patches
         [HarmonyPrefix]
         private static bool BlockButton(ref bool __result)
         {
-            if (DearImGuiInjectionPlus.IsCursorVisible)
+            if (ShouldBlockKeyboard() || ShouldBlockMouse())
             {
                 __result = false;
                 return false;
@@ -57,7 +89,7 @@ namespace DearImGuiInjectionPlus.Patches
         [HarmonyPrefix]
         private static bool BlockKeyString(ref bool __result)
         {
-            if (DearImGuiInjectionPlus.IsCursorVisible)
+            if (ShouldBlockKeyboard() || ShouldBlockMouse())
             {
                 __result = false;
                 return false;
@@ -70,7 +102,7 @@ namespace DearImGuiInjectionPlus.Patches
         [HarmonyPrefix]
         private static bool BlockScrollDelta(ref Vector2 __result)
         {
-            if (DearImGuiInjectionPlus.IsCursorVisible)
+            if (ShouldBlockMouse())
             {
                 __result = Vector2.zero;
                 return false;
@@ -85,7 +117,7 @@ namespace DearImGuiInjectionPlus.Patches
         [HarmonyPrefix]
         private static bool BlockMouseButton(ref bool __result)
         {
-            if (DearImGuiInjectionPlus.IsCursorVisible)
+            if (ShouldBlockMouse())
             {
                 __result = false;
                 return false;
@@ -99,12 +131,48 @@ namespace DearImGuiInjectionPlus.Patches
         [HarmonyPrefix]
         private static bool BlockAnyKey(ref bool __result)
         {
-            if (DearImGuiInjectionPlus.IsCursorVisible)
+            if (ShouldBlockKeyboard() || ShouldBlockMouse())
             {
                 __result = false;
                 return false;
             }
             return true;
+        }
+
+        // 8. Block input text stream (stops text fields from receiving typed characters)
+        [HarmonyPatch(typeof(Input), nameof(Input.inputString), MethodType.Getter)]
+        [HarmonyPrefix]
+        private static bool BlockInputString(ref string __result)
+        {
+            if (ShouldBlockKeyboard())
+            {
+                __result = string.Empty;
+                return false;
+            }
+            return true;
+        }
+
+        // 9. Freeze mousePosition (stops camera drift and mouse coordinates from leaking)
+        [HarmonyPatch(typeof(Input), nameof(Input.mousePosition), MethodType.Getter)]
+        [HarmonyPrefix]
+        private static bool BlockMousePosition(ref Vector3 __result)
+        {
+            if (ShouldBlockMouse())
+            {
+                __result = LastMousePosition;
+                return false;
+            }
+            return true;
+        }
+
+        [HarmonyPatch(typeof(Input), nameof(Input.mousePosition), MethodType.Getter)]
+        [HarmonyPostfix]
+        private static void TrackMousePosition(Vector3 __result)
+        {
+            if (!DearImGuiInjectionPlus.IsCursorVisible)
+            {
+                LastMousePosition = __result;
+            }
         }
     }
 }

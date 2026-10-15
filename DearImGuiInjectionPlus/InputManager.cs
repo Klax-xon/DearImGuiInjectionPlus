@@ -220,8 +220,12 @@ internal static class InputManager
             // This stops Unity's camera from rotating while moving the mouse over ImGui
             if ((int)msg == 0x00FF || msg == WindowMessage.WM_INPUT)
             {
-                // Let Windows clean up raw input buffers, but DO NOT forward to Unity
-                return User32.DefWindowProc(hWnd, msg, wParam, lParam);
+                if (DearImGuiInjectionPlus.BlockAllInputsWhenOpen || DearImGuiInjectionPlus.WantCaptureMouse)
+                {
+                    // Let Windows clean up raw input buffers, but DO NOT forward to Unity
+                    return User32.DefWindowProc(hWnd, msg, wParam, lParam);
+                }
+                return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
             }
 
             // Swallow mouse messages (clicks, moves, wheels) if blocking all inputs or ImGui wants mouse capture

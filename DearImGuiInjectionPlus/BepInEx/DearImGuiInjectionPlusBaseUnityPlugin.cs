@@ -63,6 +63,15 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
 
         DearImGuiInjectionPlus.BlockAllInputsWhenOpen = blockAllInputsConfig.Value;
 
+        blockAllInputsConfig.SettingChanged += (_, _) =>
+        {
+            DearImGuiInjectionPlus.BlockAllInputsWhenOpen = blockAllInputsConfig.Value;
+            if (!DearImGuiInjectionPlus.BlockAllInputsWhenOpen)
+            {
+                NewInputSystemBlocker.RestoreDevicesIfNeeded();
+            }
+        };
+
         var assetsFolder = Path.Combine(Path.GetDirectoryName(Info.Location), "Assets");
         if (!Directory.Exists(assetsFolder))
         {
@@ -171,7 +180,22 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
 
         orig(self);
     }
-
+ 
+    private void Update()
+    {
+        if (DearImGuiInjectionPlus.IsCursorVisible && DearImGuiInjectionPlus.BlockAllInputsWhenOpen)
+        {
+            NewInputSystemBlocker.EnforceBlocked();
+        }
+        else
+        {
+            if (!DearImGuiInjectionPlus.IsCursorVisible)
+            {
+                UnityInputBlocker.LastMousePosition = Input.mousePosition;
+            }
+            NewInputSystemBlocker.RestoreDevicesIfNeeded();
+        }
+    }
 
     private void OnDestroy()
     {
