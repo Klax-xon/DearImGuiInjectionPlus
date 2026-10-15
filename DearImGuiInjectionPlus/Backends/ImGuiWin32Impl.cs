@@ -687,12 +687,20 @@ public static unsafe class ImGuiWin32Impl
                     byte b = *(byte*)&wParam;
                     byte[] lolxd = new byte[1] { b };
 
-                    const int wideBufferSize = 1;
-                    var wideBuffer = Marshal.AllocHGlobal(wideBufferSize);
-                    Kernel32.MultiByteToWideChar(Kernel32.CP_ACP, Kernel32.MB_PRECOMPOSED, lolxd, 1, wideBuffer, wideBufferSize);
-                    var wideBufferChar = *(char*)wideBuffer;
-                    _eventQueue.Enqueue(InputEvent.CreateChar(wideBufferChar));
-                    Marshal.FreeHGlobal(wideBuffer);
+                    const int wideCharCapacity = 1;
+                    var wideBuffer = Marshal.AllocHGlobal(wideCharCapacity * sizeof(char));
+                    try
+                    {
+                        if (Kernel32.MultiByteToWideChar(Kernel32.CP_ACP, Kernel32.MB_PRECOMPOSED, lolxd, 1, wideBuffer, wideCharCapacity) > 0)
+                        {
+                            var wideBufferChar = *(char*)wideBuffer;
+                            _eventQueue.Enqueue(InputEvent.CreateChar(wideBufferChar));
+                        }
+                    }
+                    finally
+                    {
+                        Marshal.FreeHGlobal(wideBuffer);
+                    }
                 }
                 return IntPtr.Zero;
             case WindowMessage.WM_SETCURSOR:
