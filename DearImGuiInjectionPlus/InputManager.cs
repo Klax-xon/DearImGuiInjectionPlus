@@ -197,6 +197,8 @@ internal static class InputManager
             }
 
             // 4. When menu is OPEN: Feed ImGui first
+            // INP-09: Continuously free native cursor clipping while menu is open
+            User32.ClipCursor(IntPtr.Zero);
             ImGuiWin32Impl.WndProcHandler(hWnd, msg, wParam, lParam);
 
             // INP-08: Respond to WM_UNICHAR query probe
@@ -531,28 +533,40 @@ internal static class InputManager
             if (visible)
             {
                 CaptureDepressedKeys();
-
-                if (Cursor.lockState != CursorLockMode.None)
-                {
-                    CursorLockStatePatch.DesiredGameLockState = Cursor.lockState;
-                }
-                CursorVisiblePatch.DesiredGameVisible = Cursor.visible;
-
-                try
-                {
-                    CursorLockStatePatch.SuppressStateCapture = true;
-                    CursorVisiblePatch.SuppressStateCapture = true;
-
-                    Cursor.lockState = CursorLockMode.None;
-                    Cursor.visible = true;
-                }
-                finally
-                {
-                    CursorLockStatePatch.SuppressStateCapture = false;
-                    CursorVisiblePatch.SuppressStateCapture = false;
-                }
-
                 User32.ClipCursor(IntPtr.Zero);
+
+                // INP-09: Dispatch Unity cursor API mutations to the main scripting thread
+                UnityMainThreadDispatcher.Enqueue(() =>
+                {
+                    try
+                    {
+                        if (Cursor.lockState != CursorLockMode.None)
+                        {
+                            CursorLockStatePatch.DesiredGameLockState = Cursor.lockState;
+                        }
+                        CursorVisiblePatch.DesiredGameVisible = Cursor.visible;
+
+                        try
+                        {
+                            CursorLockStatePatch.SuppressStateCapture = true;
+                            CursorVisiblePatch.SuppressStateCapture = true;
+
+                            Cursor.lockState = CursorLockMode.None;
+                            Cursor.visible = true;
+                        }
+                        finally
+                        {
+                            CursorLockStatePatch.SuppressStateCapture = false;
+                            CursorVisiblePatch.SuppressStateCapture = false;
+                        }
+
+                        User32.ClipCursor(IntPtr.Zero);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning($"[InputManager] Error applying cursor state on main thread: {ex.Message}");
+                    }
+                });
             }
             else
             {
@@ -565,19 +579,30 @@ internal static class InputManager
                 // INP-02: Synthesize release events for keys/buttons still marked down
                 ReleaseRemainingDepressedKeys(_windowHandle);
 
-                try
+                // INP-09: Dispatch Unity cursor API mutations to the main scripting thread
+                UnityMainThreadDispatcher.Enqueue(() =>
                 {
-                    CursorLockStatePatch.SuppressStateCapture = true;
-                    CursorVisiblePatch.SuppressStateCapture = true;
+                    try
+                    {
+                        try
+                        {
+                            CursorLockStatePatch.SuppressStateCapture = true;
+                            CursorVisiblePatch.SuppressStateCapture = true;
 
-                    Cursor.lockState = CursorLockStatePatch.DesiredGameLockState;
-                    Cursor.visible = CursorVisiblePatch.DesiredGameVisible;
-                }
-                finally
-                {
-                    CursorLockStatePatch.SuppressStateCapture = false;
-                    CursorVisiblePatch.SuppressStateCapture = false;
-                }
+                            Cursor.lockState = CursorLockStatePatch.DesiredGameLockState;
+                            Cursor.visible = CursorVisiblePatch.DesiredGameVisible;
+                        }
+                        finally
+                        {
+                            CursorLockStatePatch.SuppressStateCapture = false;
+                            CursorVisiblePatch.SuppressStateCapture = false;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning($"[InputManager] Error restoring cursor state on main thread: {ex.Message}");
+                    }
+                });
             }
         }
         catch (Exception ex)
@@ -588,7 +613,10 @@ internal static class InputManager
 
     internal static void EnforceCursorStateOnMainThread()
     {
-        if (DearImGuiInjectionPlus.IsCursorVisible)
+        if (!DearImGuiInjectionPlus.IsCursorVisible)
+            return;
+
+        try
         {
             try
             {
@@ -610,6 +638,13 @@ internal static class InputManager
                 CursorLockStatePatch.SuppressStateCapture = false;
                 CursorVisiblePatch.SuppressStateCapture = false;
             }
+
+            // INP-09: Continuously unclip cursor in case game enforced confinement via native ClipCursor
+            User32.ClipCursor(IntPtr.Zero);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[InputManager] Error in EnforceCursorStateOnMainThread: {ex.Message}");
         }
     }
 }

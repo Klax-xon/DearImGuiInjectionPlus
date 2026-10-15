@@ -1,5 +1,7 @@
+using System;
 using HarmonyLib;
 using UnityEngine;
+using DearImGuiInjectionPlus.Windows;
 
 namespace DearImGuiInjectionPlus;
 
@@ -18,6 +20,8 @@ internal static class CursorLockStatePatch
         if (DearImGuiInjectionPlus.IsCursorVisible)
         {
             value = CursorLockMode.None;
+            // INP-09: Prevent game from clipping cursor via Unity lockState setter
+            User32.ClipCursor(IntPtr.Zero);
         }
         return true;
     }

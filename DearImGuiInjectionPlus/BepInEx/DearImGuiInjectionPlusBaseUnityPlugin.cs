@@ -195,6 +195,17 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
             }
             NewInputSystemBlocker.RestoreDevicesIfNeeded();
         }
+
+        if (DearImGuiInjectionPlus.IsCursorVisible)
+        {
+            InputManager.EnforceCursorStateOnMainThread();
+        }
+    }
+
+    private void LateUpdate()
+    {
+        // INP-09: Re-enforce cursor unlocked state and free clipping after game Update/LateUpdate loops run
+        InputManager.EnforceCursorStateOnMainThread();
     }
 
     private void OnDestroy()
