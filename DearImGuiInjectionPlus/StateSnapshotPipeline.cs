@@ -36,22 +36,31 @@ public class StateSnapshotPipeline<T> where T : class
 }
 
 /// <summary>
-/// Thread-safe double-buffered snapshot pipeline for value types (structs).
-/// Eliminates GC pressure by copying into alternating pre-allocated slots.
+/// Thread-safe triple-buffered snapshot pipeline for value types (structs).
+/// Eliminates GC pressure and torn reads by exchanging between three pre-allocated slots.
 /// </summary>
 /// <typeparam name="T">Struct snapshot data type.</typeparam>
 public class StructSnapshotPipeline<T> where T : struct
 {
     private T _slot0;
     private T _slot1;
-    private volatile int _activeReadIndex;
+    private T _slot2;
+    private int _sharedIndex;
+    private int _writeIndex;
+    private int _readIndex;
     private readonly object _writeLock = new();
+
+    private const int NewDataFlag = 0x4;
+    private const int IndexMask = 0x3;
 
     public StructSnapshotPipeline(T initial = default)
     {
         _slot0 = initial;
         _slot1 = initial;
-        _activeReadIndex = 0;
+        _slot2 = initial;
+        _readIndex = 0;
+        _sharedIndex = 1;
+        _writeIndex = 2;
     }
 
     /// <summary>
@@ -61,21 +70,44 @@ public class StructSnapshotPipeline<T> where T : struct
     {
         lock (_writeLock)
         {
-            int writeIndex = 1 - _activeReadIndex;
-            if (writeIndex == 0)
+            if (_writeIndex == 0)
                 _slot0 = snapshot;
-            else
+            else if (_writeIndex == 1)
                 _slot1 = snapshot;
+            else
+                _slot2 = snapshot;
 
-            _activeReadIndex = writeIndex;
+            int oldShared = Interlocked.Exchange(ref _sharedIndex, _writeIndex | NewDataFlag);
+            _writeIndex = oldShared & IndexMask;
         }
     }
 
     /// <summary>
-    /// Reads the most recent struct snapshot from the render thread.
+    /// Reads the most recent struct snapshot from the render thread. Lock-free and zero-allocation.
     /// </summary>
     public T GetLatest()
     {
-        return _activeReadIndex == 0 ? _slot0 : _slot1;
+        int shared = Volatile.Read(ref _sharedIndex);
+        if ((shared & NewDataFlag) != 0)
+        {
+            while ((shared & NewDataFlag) != 0)
+            {
+                int prev = Interlocked.CompareExchange(ref _sharedIndex, _readIndex, shared);
+                if (prev == shared)
+                {
+                    _readIndex = shared & IndexMask;
+                    break;
+                }
+                shared = prev;
+            }
+        }
+
+        return _readIndex switch
+        {
+            0 => _slot0,
+            1 => _slot1,
+            _ => _slot2
+        };
     }
 }
+
