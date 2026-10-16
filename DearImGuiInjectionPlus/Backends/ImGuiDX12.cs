@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using DearImGuiInjectionPlus.Windows;
 using ImGuiNET;
@@ -36,6 +37,12 @@ internal static class ImGuiDX12
     private static System.Threading.AutoResetEvent _fenceEvent;
     private static int _renderFrameCount = 0;
     private static readonly object _initLock = new();
+
+    // LC-04: Consecutive error circuit breaker fields
+    private const int MaxConsecutiveErrors = 5;
+    private static readonly long CircuitBreakerCooldownTicks = 5 * Stopwatch.Frequency;
+    private static int _consecutiveRenderErrors;
+    private static long _circuitBreakerTripUntil;
 
     internal static void Init(IntPtr swapChainPtr = default)
     {
@@ -106,6 +113,8 @@ internal static class ImGuiDX12
         InvalidateDevice();
 
         _windowHandle = IntPtr.Zero;
+        _consecutiveRenderErrors = 0;
+        _circuitBreakerTripUntil = 0;
     }
 
     private static void InvalidateDevice()
@@ -450,6 +459,15 @@ internal static class ImGuiDX12
         if (RendererFinder.RendererFinder.IsShuttingDown)
             return;
 
+        // LC-04: Circuit breaker - pause overlay rendering for 5 seconds if consecutively failing
+        if (_consecutiveRenderErrors >= MaxConsecutiveErrors)
+        {
+            if (Stopwatch.GetTimestamp() < _circuitBreakerTripUntil)
+            {
+                return;
+            }
+        }
+
         if (_commandQueue == null || _frameContexts == null || _device == null || _rtvDescriptorHeap == null)
             return;
 
@@ -606,6 +624,12 @@ internal static class ImGuiDX12
                 {
                     Log.Info($"[ImGuiDX12] Frame {frame}: CommandList executed on CommandQueue (Fence: {_fenceValue}).");
                 }
+
+                if (_consecutiveRenderErrors > 0)
+                {
+                    _consecutiveRenderErrors = 0;
+                    Log.Info("[ImGuiDX12] Overlay rendering recovered successfully.");
+                }
             }
             finally
             {
@@ -617,7 +641,21 @@ internal static class ImGuiDX12
         }
         catch (Exception ex)
         {
-            Log.Error($"[ImGuiDX12] Render error on frame {frame}: {ex}");
+            _consecutiveRenderErrors++;
+            if (_consecutiveRenderErrors <= MaxConsecutiveErrors)
+            {
+                Log.Error($"[ImGuiDX12] Render error on frame {frame}: {ex}");
+                if (_consecutiveRenderErrors == MaxConsecutiveErrors)
+                {
+                    _circuitBreakerTripUntil = Stopwatch.GetTimestamp() + CircuitBreakerCooldownTicks;
+                    Log.Warning($"[ImGuiDX12] Circuit breaker tripped after {MaxConsecutiveErrors} consecutive render errors. Overlay rendering paused for 5 seconds to prevent log flood.");
+                }
+            }
+            else
+            {
+                _circuitBreakerTripUntil = Stopwatch.GetTimestamp() + CircuitBreakerCooldownTicks;
+            }
+
             bool isLost = false;
             try
             {

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using CppInterop;
 using Reloaded.Hooks;
 using SharpDX.Direct3D;
@@ -86,6 +87,12 @@ public class DX11Renderer : IRenderer
         }
     }
     private static Action<SwapChain, uint, uint> _onPresentAction;
+
+    // LC-04: Consecutive error circuit breaker fields
+    private const int MaxConsecutiveErrors = 5;
+    private static readonly long CircuitBreakerCooldownTicks = 5 * Stopwatch.Frequency;
+    private static int _consecutivePresentErrors;
+    private static long _circuitBreakerTripUntil;
 
     public unsafe bool Init()
     {
@@ -243,6 +250,8 @@ public class DX11Renderer : IRenderer
             _onPresentAction = null;
         }
         _cachedSwapChain = null;
+        _consecutivePresentErrors = 0;
+        _circuitBreakerTripUntil = 0;
 
         try
         {
@@ -273,19 +282,17 @@ public class DX11Renderer : IRenderer
 
     private static IntPtr SwapChainPresentHook(IntPtr self, uint syncInterval, uint flags)
     {
-        if ((flags & DXGI_PRESENT_TEST) != 0)
+        if ((flags & DXGI_PRESENT_TEST) != 0 || RendererFinder.IsShuttingDown || _isInsidePresent)
         {
-            return _swapChainPresentHook.OriginalFunction(self, syncInterval, flags);
-        }
-
-        if (RendererFinder.IsShuttingDown)
-        {
-            return _swapChainPresentHook.OriginalFunction(self, syncInterval, flags);
-        }
-
-        if (_isInsidePresent)
-        {
-            return _swapChainPresentHook.OriginalFunction(self, syncInterval, flags);
+            try
+            {
+                return _swapChainPresentHook.OriginalFunction(self, syncInterval, flags);
+            }
+            catch (Exception ex)
+            {
+                Log.Fatal($"[DX11Renderer] Fatal exception calling original Present: {ex}");
+                return IntPtr.Zero;
+            }
         }
 
         _isInsidePresent = true;
@@ -297,12 +304,22 @@ public class DX11Renderer : IRenderer
                 {
                     HandlePresent(self, syncInterval, flags);
                 }
+                catch (Exception ex)
+                {
+                    Log.Error($"[DX11Renderer] Exception in HandlePresent: {ex}");
+                }
                 finally
                 {
                     FrameGate.Exit();
                 }
             }
+
             return _swapChainPresentHook.OriginalFunction(self, syncInterval, flags);
+        }
+        catch (Exception fatal)
+        {
+            Log.Fatal($"[DX11Renderer] Fatal exception in Present hook: {fatal}");
+            return IntPtr.Zero;
         }
         finally
         {
@@ -312,19 +329,17 @@ public class DX11Renderer : IRenderer
 
     private static IntPtr SwapChainPresent1Hook(IntPtr self, uint syncInterval, uint flags, IntPtr presentParameters)
     {
-        if ((flags & DXGI_PRESENT_TEST) != 0)
+        if ((flags & DXGI_PRESENT_TEST) != 0 || RendererFinder.IsShuttingDown || _isInsidePresent)
         {
-            return _swapChainPresent1Hook.OriginalFunction(self, syncInterval, flags, presentParameters);
-        }
-
-        if (RendererFinder.IsShuttingDown)
-        {
-            return _swapChainPresent1Hook.OriginalFunction(self, syncInterval, flags, presentParameters);
-        }
-
-        if (_isInsidePresent)
-        {
-            return _swapChainPresent1Hook.OriginalFunction(self, syncInterval, flags, presentParameters);
+            try
+            {
+                return _swapChainPresent1Hook.OriginalFunction(self, syncInterval, flags, presentParameters);
+            }
+            catch (Exception ex)
+            {
+                Log.Fatal($"[DX11Renderer] Fatal exception calling original Present1: {ex}");
+                return IntPtr.Zero;
+            }
         }
 
         _isInsidePresent = true;
@@ -336,12 +351,22 @@ public class DX11Renderer : IRenderer
                 {
                     HandlePresent(self, syncInterval, flags);
                 }
+                catch (Exception ex)
+                {
+                    Log.Error($"[DX11Renderer] Exception in HandlePresent: {ex}");
+                }
                 finally
                 {
                     FrameGate.Exit();
                 }
             }
+
             return _swapChainPresent1Hook.OriginalFunction(self, syncInterval, flags, presentParameters);
+        }
+        catch (Exception fatal)
+        {
+            Log.Fatal($"[DX11Renderer] Fatal exception in Present1 hook: {fatal}");
+            return IntPtr.Zero;
         }
         finally
         {
@@ -426,6 +451,15 @@ public class DX11Renderer : IRenderer
             var action = _onPresentAction;
             if (action != null)
             {
+                // LC-04: Circuit breaker - pause overlay rendering for 5 seconds if consecutively failing
+                if (_consecutivePresentErrors >= MaxConsecutiveErrors)
+                {
+                    if (Stopwatch.GetTimestamp() < _circuitBreakerTripUntil)
+                    {
+                        return;
+                    }
+                }
+
                 var swapChain = (_cachedSwapChain != null && _cachedSwapChain.NativePointer == self)
                     ? _cachedSwapChain
                     : (_cachedSwapChain = new SwapChain(self));
@@ -433,10 +467,28 @@ public class DX11Renderer : IRenderer
                 try
                 {
                     action.Invoke(swapChain, syncInterval, flags);
+                    if (_consecutivePresentErrors > 0)
+                    {
+                        _consecutivePresentErrors = 0;
+                        Log.Info("[DX11Renderer] Present callback recovered successfully.");
+                    }
                 }
                 catch (Exception e)
                 {
-                    Log.Error(e);
+                    _consecutivePresentErrors++;
+                    if (_consecutivePresentErrors <= MaxConsecutiveErrors)
+                    {
+                        Log.Error($"[DX11Renderer] Error in Present callback: {e}");
+                        if (_consecutivePresentErrors == MaxConsecutiveErrors)
+                        {
+                            _circuitBreakerTripUntil = Stopwatch.GetTimestamp() + CircuitBreakerCooldownTicks;
+                            Log.Warning($"[DX11Renderer] Circuit breaker tripped after {MaxConsecutiveErrors} consecutive errors. Disabling overlay rendering for 5 seconds.");
+                        }
+                    }
+                    else
+                    {
+                        _circuitBreakerTripUntil = Stopwatch.GetTimestamp() + CircuitBreakerCooldownTicks;
+                    }
                 }
             }
         }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using CppInterop;
 using Reloaded.Hooks;
@@ -82,6 +83,12 @@ public class DX12Renderer : IRenderer
         }
     }
     private static Action<SwapChain3, uint, uint, IntPtr> _onPresentAction;
+
+    // LC-04: Consecutive error circuit breaker fields
+    private const int MaxConsecutiveErrors = 5;
+    private static readonly long CircuitBreakerCooldownTicks = 5 * Stopwatch.Frequency;
+    private static int _consecutivePresentErrors;
+    private static long _circuitBreakerTripUntil;
 
     [Reloaded.Hooks.Definitions.X64.Function(Reloaded.Hooks.Definitions.X64.CallingConventions.Microsoft)]
     [Reloaded.Hooks.Definitions.X86.Function(Reloaded.Hooks.Definitions.X86.CallingConventions.Stdcall)]
@@ -185,6 +192,8 @@ public class DX12Renderer : IRenderer
         _candidateCommandQueue = IntPtr.Zero;
         _candidateThreadId = 0;
         _lastDirectQueueOnCurrentThread = IntPtr.Zero;
+        _consecutivePresentErrors = 0;
+        _circuitBreakerTripUntil = 0;
 
         if (ExpectedDevicePointer != IntPtr.Zero)
         {
@@ -264,6 +273,15 @@ public class DX12Renderer : IRenderer
         var action = _onPresentAction;
         if (action != null)
         {
+            // LC-04: Circuit breaker - pause overlay rendering for 5 seconds if consecutively failing
+            if (_consecutivePresentErrors >= MaxConsecutiveErrors)
+            {
+                if (Stopwatch.GetTimestamp() < _circuitBreakerTripUntil)
+                {
+                    return;
+                }
+            }
+
             var swapChain = (_cachedSwapChain != null && _cachedSwapChain.NativePointer == self)
                 ? _cachedSwapChain
                 : (_cachedSwapChain = new SwapChain3(self));
@@ -271,25 +289,44 @@ public class DX12Renderer : IRenderer
             try
             {
                 action.Invoke(swapChain, syncInterval, flags, IntPtr.Zero);
+                if (_consecutivePresentErrors > 0)
+                {
+                    _consecutivePresentErrors = 0;
+                    Log.Info("[DX12Renderer] Present callback recovered successfully.");
+                }
             }
             catch (Exception e)
             {
-                Log.Error(e);
+                _consecutivePresentErrors++;
+                if (_consecutivePresentErrors <= MaxConsecutiveErrors)
+                {
+                    Log.Error($"[DX12Renderer] Error in Present callback: {e}");
+                    if (_consecutivePresentErrors == MaxConsecutiveErrors)
+                    {
+                        _circuitBreakerTripUntil = Stopwatch.GetTimestamp() + CircuitBreakerCooldownTicks;
+                        Log.Warning($"[DX12Renderer] Circuit breaker tripped after {MaxConsecutiveErrors} consecutive errors. Disabling overlay rendering for 5 seconds.");
+                    }
+                }
+                else
+                {
+                    _circuitBreakerTripUntil = Stopwatch.GetTimestamp() + CircuitBreakerCooldownTicks;
+                }
             }
         }
     }
 
     private static void CommandQueueExecuteCommandListHook(IntPtr self, int numCommandLists, IntPtr ppCommandLists)
     {
-        if (!_captureQueue || CapturedCommandQueue != IntPtr.Zero)
+        if (!_captureQueue || CapturedCommandQueue != IntPtr.Zero || _isInsideExecuteCommandLists || RendererFinder.IsShuttingDown)
         {
-            _commandQueueExecuteCommandListHook.OriginalFunction(self, numCommandLists, ppCommandLists);
-            return;
-        }
-
-        if (_isInsideExecuteCommandLists || RendererFinder.IsShuttingDown)
-        {
-            _commandQueueExecuteCommandListHook.OriginalFunction(self, numCommandLists, ppCommandLists);
+            try
+            {
+                _commandQueueExecuteCommandListHook.OriginalFunction(self, numCommandLists, ppCommandLists);
+            }
+            catch (Exception ex)
+            {
+                Log.Fatal($"[DX12Renderer] Fatal exception calling original ExecuteCommandLists: {ex}");
+            }
             return;
         }
 
@@ -338,32 +375,29 @@ public class DX12Renderer : IRenderer
                         _candidateThreadId = User32.GetCurrentThreadId();
                     }
                 }
+
+                Func<CommandQueue, uint, IntPtr, bool> action;
+                lock (_onExecuteCommandListActionLock)
+                {
+                    action = OnExecuteCommandListAction;
+                }
+
+                if (action != null && CapturedCommandQueue == self)
+                {
+                    var commandQueue = new CommandQueue(self);
+                    action.Invoke(commandQueue, (uint)numCommandLists, ppCommandLists);
+                }
             }
             catch (Exception ex)
             {
-                Log.Warning($"[DX12Renderer] Failed to query command queue type: {ex.Message}");
-            }
-
-            Func<CommandQueue, uint, IntPtr, bool> action;
-            lock (_onExecuteCommandListActionLock)
-            {
-                action = OnExecuteCommandListAction;
-            }
-
-            if (action != null && CapturedCommandQueue == self)
-            {
-                var commandQueue = new CommandQueue(self);
-                try
-                {
-                    action.Invoke(commandQueue, (uint)numCommandLists, ppCommandLists);
-                }
-                catch (Exception e)
-                {
-                    Log.Error(e);
-                }
+                Log.Error($"[DX12Renderer] Exception in ExecuteCommandLists hook: {ex}");
             }
 
             _commandQueueExecuteCommandListHook.OriginalFunction(self, numCommandLists, ppCommandLists);
+        }
+        catch (Exception fatal)
+        {
+            Log.Fatal($"[DX12Renderer] Fatal exception in ExecuteCommandLists hook: {fatal}");
         }
         finally
         {

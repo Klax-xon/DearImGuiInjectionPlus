@@ -62,17 +62,24 @@ internal static class InputManager
     {
         void TrySubclass()
         {
-            if (_isSubclassed || _windowHandle != hWnd)
-                return;
+            try
+            {
+                if (_isSubclassed || _windowHandle != hWnd)
+                    return;
 
-            _isSubclassed = Comctl32.SetWindowSubclass(hWnd, _subclassProcDelegate, SubclassId, UIntPtr.Zero);
-            if (_isSubclassed)
-            {
-                Log.Info($"[InputManager] Subclassed window {hWnd:X8} via SetWindowSubclass on thread {Kernel32.GetCurrentThreadId()}. Input hook listening for {ToggleKey}.");
+                _isSubclassed = Comctl32.SetWindowSubclass(hWnd, _subclassProcDelegate, SubclassId, UIntPtr.Zero);
+                if (_isSubclassed)
+                {
+                    Log.Info($"[InputManager] Subclassed window {hWnd:X8} via SetWindowSubclass on thread {Kernel32.GetCurrentThreadId()}. Input hook listening for {ToggleKey}.");
+                }
+                else
+                {
+                    Log.Error($"[InputManager] Failed to subclass window {hWnd:X8} via SetWindowSubclass. Error: {Marshal.GetLastWin32Error()}");
+                }
             }
-            else
+            catch (Exception ex)
             {
-                Log.Error($"[InputManager] Failed to subclass window {hWnd:X8} via SetWindowSubclass. Error: {Marshal.GetLastWin32Error()}");
+                Log.Error($"[InputManager] Exception during SetWindowSubclass: {ex}");
             }
         }
 
@@ -98,23 +105,30 @@ internal static class InputManager
 
             void TryUnsubclass()
             {
-                if (_isSubclassed)
+                try
                 {
-                    ClearAllDownKeys();
-                    if (User32.GetCapture() != IntPtr.Zero)
+                    if (_isSubclassed)
                     {
-                        User32.ReleaseCapture();
+                        ClearAllDownKeys();
+                        if (User32.GetCapture() != IntPtr.Zero)
+                        {
+                            User32.ReleaseCapture();
+                        }
+                        bool removed = Comctl32.RemoveWindowSubclass(hWnd, _subclassProcDelegate, SubclassId);
+                        if (removed)
+                        {
+                            Log.Info($"[InputManager] Removed window subclass on window {hWnd:X8}");
+                        }
+                        else
+                        {
+                            Log.Warning($"[InputManager] Failed to remove window subclass on window {hWnd:X8}. Error: {Marshal.GetLastWin32Error()}");
+                        }
+                        _isSubclassed = false;
                     }
-                    bool removed = Comctl32.RemoveWindowSubclass(hWnd, _subclassProcDelegate, SubclassId);
-                    if (removed)
-                    {
-                        Log.Info($"[InputManager] Removed window subclass on window {hWnd:X8}");
-                    }
-                    else
-                    {
-                        Log.Warning($"[InputManager] Failed to remove window subclass on window {hWnd:X8}. Error: {Marshal.GetLastWin32Error()}");
-                    }
-                    _isSubclassed = false;
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"[InputManager] Exception during RemoveWindowSubclass: {ex}");
                 }
             }
 
@@ -143,7 +157,22 @@ internal static class InputManager
 
     public static unsafe IntPtr WndProcHandler(IntPtr hWnd, WindowMessage msg, IntPtr wParam, IntPtr lParam)
     {
-        return SubclassHandler(hWnd, msg, wParam, lParam, SubclassId, UIntPtr.Zero);
+        try
+        {
+            return SubclassHandler(hWnd, msg, wParam, lParam, SubclassId, UIntPtr.Zero);
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                Log.Fatal($"[InputManager] Fatal exception in WndProcHandler: {ex}");
+                return User32.DefWindowProc(hWnd, msg, wParam, lParam);
+            }
+            catch
+            {
+                return IntPtr.Zero;
+            }
+        }
     }
 
     public static unsafe IntPtr SubclassHandler(IntPtr hWnd, WindowMessage msg, IntPtr wParam, IntPtr lParam, UIntPtr uIdSubclass, UIntPtr dwRefData)
@@ -278,8 +307,15 @@ internal static class InputManager
         }
         catch (Exception ex)
         {
-            Log.Error($"[InputManager] Error in SubclassHandler: {ex}");
-            return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
+            try
+            {
+                Log.Error($"[InputManager] Error in SubclassHandler: {ex}");
+                return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
+            }
+            catch
+            {
+                return IntPtr.Zero;
+            }
         }
     }
 
