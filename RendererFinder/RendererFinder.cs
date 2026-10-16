@@ -53,6 +53,8 @@ public static class RendererFinder
 
     public static bool Init()
     {
+        IsShuttingDown = false;
+        IsBackendInitialized = false;
         Log.Info($"[RendererFinder] Initializing hooks (TargetRendererKind: {TargetRendererKind})...");
 
         // 1. Hook DXGI swapchain Present (Slot 8, 22)
@@ -290,5 +292,6 @@ public static class RendererFinder
         RendererKind = RendererKind.None;
         TargetRendererKind = RendererKind.None;
         OnRendererDetected = null;
+        IsShuttingDown = false;
     }
 }

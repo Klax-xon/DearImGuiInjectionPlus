@@ -28,6 +28,7 @@ public static unsafe class ImGuiWin32Impl
     private static IntPtr _xInputDLL;
     private static XInputGetCapabilitiesDelegate _xInputGetCapabilities;
     private static XInputGetStateDelegate _xInputGetState;
+    private static IntPtr _platformNamePtr;
 
     private static bool ImGui_ImplWin32_InitEx(void* windowHandle, bool platform_has_own_dc)
     {
@@ -44,7 +45,11 @@ public static unsafe class ImGuiWin32Impl
             return false;
 
         // Setup backend capabilities flags
-        io.NativePtr->BackendPlatformName = (byte*)Marshal.StringToHGlobalAnsi("imgui_impl_win32");
+        if (_platformNamePtr == IntPtr.Zero)
+        {
+            _platformNamePtr = Marshal.StringToHGlobalAnsi("imgui_impl_win32");
+        }
+        io.NativePtr->BackendPlatformName = (byte*)_platformNamePtr;
         io.BackendFlags |= ImGuiBackendFlags.HasMouseCursors;         // We can honor GetMouseCursor() values (optional)
         io.BackendFlags |= ImGuiBackendFlags.HasSetMousePos;          // We can honor io.WantSetMousePos requests (optional, rarely used)
 
@@ -172,29 +177,45 @@ public static unsafe class ImGuiWin32Impl
 
     public static void Shutdown()
     {
-        if (_windowHandle == IntPtr.Zero)
+        if (_windowHandle == IntPtr.Zero && _platformNamePtr == IntPtr.Zero)
         {
-            Log.Error("No platform backend to shutdown, or already shutdown?");
             return;
         }
 
         if (ImGui.GetCurrentContext() != IntPtr.Zero)
         {
             var io = ImGui.GetIO();
-            io.NativePtr->BackendPlatformName = null;
-            io.NativePtr->BackendPlatformUserData = null;
-            io.BackendFlags &= ~(ImGuiBackendFlags.HasMouseCursors | ImGuiBackendFlags.HasSetMousePos | ImGuiBackendFlags.HasGamepad);
+            if (io.NativePtr != null)
+            {
+                io.NativePtr->BackendPlatformName = null;
+                io.NativePtr->BackendPlatformUserData = null;
+                io.BackendFlags &= ~(ImGuiBackendFlags.HasMouseCursors | ImGuiBackendFlags.HasSetMousePos | ImGuiBackendFlags.HasGamepad);
+            }
+        }
+
+        if (_platformNamePtr != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(_platformNamePtr);
+            _platformNamePtr = IntPtr.Zero;
         }
 
         // Unload XInput library
         if (_xInputDLL != IntPtr.Zero)
+        {
             Kernel32.FreeLibrary(_xInputDLL);
+            _xInputDLL = IntPtr.Zero;
+            _xInputGetCapabilities = null;
+            _xInputGetState = null;
+        }
 
         while (_eventQueue.TryDequeue(out _)) { }
         _mouseButtonsDown = 0;
         _mouseTrackedArea = 0;
         _mouseHandle = IntPtr.Zero;
         _windowHandle = IntPtr.Zero;
+        _ticksPerSecond = 0;
+        _time = 0;
+        _lastMouseCursor = ImGuiMouseCursor.COUNT;
     }
 
     internal static bool ImGui_ImplWin32_UpdateMouseCursor()

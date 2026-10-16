@@ -707,7 +707,7 @@ public static class ImGuiDX11Impl
         _vertexShader = null;
     }
 
-    public static void Shutdown()
+    public static unsafe void Shutdown()
     {
         InvalidateDeviceObjects();
 
@@ -715,6 +715,17 @@ public static class ImGuiDX11Impl
         _device = null;
         _deviceContext = null;
         _psSetShaderResources = null;
+
+        if (ImGui.GetCurrentContext() != IntPtr.Zero)
+        {
+            var io = ImGui.GetIO();
+            if (io.NativePtr != null)
+            {
+                io.NativePtr->BackendRendererName = null;
+                io.NativePtr->BackendRendererUserData = null;
+                io.BackendFlags &= ~ImGuiBackendFlags.RendererHasVtxOffset;
+            }
+        }
 
         if (_renderNamePtr != IntPtr.Zero)
         {
@@ -741,7 +752,10 @@ public static class ImGuiDX11Impl
         _deviceObjectsCreationFailed = false;
         ImGui.GetIO().BackendFlags = ImGui.GetIO().BackendFlags | ImGuiBackendFlags.RendererHasVtxOffset;
 
-        _renderNamePtr = Marshal.StringToHGlobalAnsi("imgui_impl_dx11_c#");
+        if (_renderNamePtr == IntPtr.Zero)
+        {
+            _renderNamePtr = Marshal.StringToHGlobalAnsi("imgui_impl_dx11_c#");
+        }
         ImGui.GetIO().NativePtr->BackendRendererName = (byte*)_renderNamePtr.ToPointer();
 
         _device = new((IntPtr)device);

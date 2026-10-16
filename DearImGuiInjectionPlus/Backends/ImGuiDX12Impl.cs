@@ -731,7 +731,10 @@ public static class ImGuiDX12Impl
         }
 
         // Setup backend capabilities flags
-        _renderNamePtr = Marshal.StringToHGlobalAnsi("imgui_impl_dx12_c#");
+        if (_renderNamePtr == IntPtr.Zero)
+        {
+            _renderNamePtr = Marshal.StringToHGlobalAnsi("imgui_impl_dx12_c#");
+        }
         ImGui.GetIO().NativePtr->BackendRendererName = (byte*)_renderNamePtr.ToPointer();
         ImGui.GetIO().BackendFlags = ImGui.GetIO().BackendFlags | ImGuiBackendFlags.RendererHasVtxOffset;
 
@@ -759,19 +762,28 @@ public static class ImGuiDX12Impl
         }
     }
 
-    internal static void Shutdown()
+    internal static unsafe void Shutdown()
     {
         if (_device == null)
         {
             Log.Error("No renderer backend to shutdown, or already shutdown?");
         }
 
-        var io = ImGui.GetIO();
-
         // Clean up windows and device objects
         InvalidateDeviceObjects();
         pFrameResources = null;
         numFramesInFlight = 0;
+
+        if (ImGui.GetCurrentContext() != IntPtr.Zero)
+        {
+            var io = ImGui.GetIO();
+            if (io.NativePtr != null)
+            {
+                io.NativePtr->BackendRendererName = null;
+                io.NativePtr->BackendRendererUserData = null;
+                io.BackendFlags &= ~ImGuiBackendFlags.RendererHasVtxOffset;
+            }
+        }
 
         if (_renderNamePtr != IntPtr.Zero)
         {
@@ -779,7 +791,6 @@ public static class ImGuiDX12Impl
             _renderNamePtr = IntPtr.Zero;
         }
 
-        io.BackendFlags = io.BackendFlags & ~ImGuiBackendFlags.RendererHasVtxOffset;
         SuppressFinalizers();
     }
 
@@ -792,7 +803,7 @@ public static class ImGuiDX12Impl
             CreateDeviceObjects();
     }
 
-    internal static void SuppressFinalizers()
+    internal static unsafe void SuppressFinalizers()
     {
         if (pRootSignature != null) { GC.SuppressFinalize(pRootSignature); pRootSignature = null; }
         if (pPipelineState != null) { GC.SuppressFinalize(pPipelineState); pPipelineState = null; }
@@ -817,6 +828,15 @@ public static class ImGuiDX12Impl
             }
             pFrameResources = null;
             numFramesInFlight = 0;
+        }
+
+        if (ImGui.GetCurrentContext() != IntPtr.Zero)
+        {
+            var io = ImGui.GetIO();
+            if (io.NativePtr != null)
+            {
+                io.NativePtr->BackendRendererName = null;
+            }
         }
 
         if (_renderNamePtr != IntPtr.Zero)

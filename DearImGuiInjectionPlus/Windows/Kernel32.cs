@@ -97,8 +97,8 @@ public static class Kernel32
     [DllImport("kernel32.dll", CharSet = CharSet.Ansi, ExactSpelling = true, SetLastError = true)]
     public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
 
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Ansi)]
-    public static extern IntPtr LoadLibrary([MarshalAs(UnmanagedType.LPStr)] string lpFileName);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern IntPtr LoadLibrary([MarshalAs(UnmanagedType.LPWStr)] string lpFileName);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool QueryPerformanceCounter(out long lpPerformanceCount);

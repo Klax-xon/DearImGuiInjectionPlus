@@ -140,7 +140,13 @@ public static class DearImGuiTheme
                 return;
             }
 
-            var font = ImGui.GetIO().Fonts.AddFontFromFileTTF(fontPath, 15);
+            var fonts = ImGui.GetIO().Fonts;
+            if (fonts.Fonts.Size > 0)
+            {
+                return;
+            }
+
+            var font = fonts.AddFontFromFileTTF(fontPath, 15);
             if (font.NativePtr != null)
             {
                 ImGui.GetIO().NativePtr->FontDefault = font;

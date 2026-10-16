@@ -29,6 +29,7 @@ public static class DearImGuiInjectionPlus
 
     public static string ImGuiIniConfigPath { get; private set; }
     private const string IniFileName = "DearImGuiInjectionPlus_imgui.ini";
+    private static IntPtr _iniFilenamePtr;
 
     public static string AssetsFolderPath { get; private set; }
 
@@ -293,10 +294,12 @@ public static class DearImGuiInjectionPlus
 
     internal static unsafe void InitImGui()
     {
+        bool isNewContext = false;
         if (ImGui.GetCurrentContext() == IntPtr.Zero)
         {
             Context = ImGui.CreateContext(null);
             Log.Info($"[DearImGuiInjectionPlus] Created ImGui context: {Context:X8}");
+            isNewContext = true;
         }
         else
         {
@@ -311,51 +314,59 @@ public static class DearImGuiInjectionPlus
 
         IO.ConfigFlags |= ImGuiConfigFlags.DockingEnable;
 
-        if (IO.NativePtr != null && !string.IsNullOrEmpty(ImGuiIniConfigPath) && IO.NativePtr->IniFilename == null)
+        if (_iniFilenamePtr == IntPtr.Zero && !string.IsNullOrEmpty(ImGuiIniConfigPath))
         {
-            IO.NativePtr->IniFilename = (byte*)Marshal.StringToHGlobalAnsi(ImGuiIniConfigPath);
+            _iniFilenamePtr = Marshal.StringToHGlobalAnsi(ImGuiIniConfigPath);
         }
 
-        DearImGuiTheme.Init();
-        Log.Info("[DearImGuiInjectionPlus] ImGui context and IO initialized.");
+        if (IO.NativePtr != null && _iniFilenamePtr != IntPtr.Zero)
+        {
+            IO.NativePtr->IniFilename = (byte*)_iniFilenamePtr;
+        }
+
+        if (isNewContext)
+        {
+            DearImGuiTheme.Init();
+            Log.Info("[DearImGuiInjectionPlus] ImGui context and IO initialized.");
+        }
     }
 
     internal static unsafe void Dispose()
     {
         RendererFinder.RendererFinder.OnRendererDetected -= OnRendererDetected;
 
-        if (Initialized)
+        // Restore window procedure before disposing graphics backends/context
+        InputManager.Unsubclass();
+        _wantCaptureMouse = false;
+        _wantCaptureKeyboard = false;
+
+        var kind = _activeRendererKind != RendererKind.None ? _activeRendererKind : RendererFinder.RendererFinder.RendererKind;
+        DisposeImplementationFromRendererKind(kind);
+        _activeRendererKind = RendererKind.None;
+        _implementationInitialized = false;
+
+        lock (_renderLock)
         {
-            // Restore window procedure before disposing graphics backends/context
-            InputManager.Unsubclass();
-            _wantCaptureMouse = false;
-            _wantCaptureKeyboard = false;
+            _renderAction = null;
+            _renderSnapshot = Array.Empty<Action>();
+        }
 
-            var kind = _activeRendererKind != RendererKind.None ? _activeRendererKind : RendererFinder.RendererFinder.RendererKind;
-            DisposeImplementationFromRendererKind(kind);
-            _activeRendererKind = RendererKind.None;
+        lock (_windowLock)
+        {
+            _registeredWindows.Clear();
+            _windowsSnapshot = Array.Empty<IImGuiWindow>();
+        }
 
-            lock (_renderLock)
+        lock (_tabLock)
+        {
+            _registeredTabs.Clear();
+            _tabsSnapshot = Array.Empty<RegisteredTab>();
+        }
+
+        if (Context != IntPtr.Zero)
+        {
+            if (ImGui.GetCurrentContext() != IntPtr.Zero)
             {
-                _renderAction = null;
-                _renderSnapshot = Array.Empty<Action>();
-            }
-
-            lock (_windowLock)
-            {
-                _registeredWindows.Clear();
-                _windowsSnapshot = Array.Empty<IImGuiWindow>();
-            }
-
-            lock (_tabLock)
-            {
-                _registeredTabs.Clear();
-                _tabsSnapshot = Array.Empty<RegisteredTab>();
-            }
-
-            if (ImGui.GetIO().NativePtr != null && ImGui.GetIO().NativePtr->IniFilename != null)
-            {
-                var iniPtr = (IntPtr)ImGui.GetIO().NativePtr->IniFilename;
                 try
                 {
                     if (!string.IsNullOrEmpty(ImGuiIniConfigPath))
@@ -368,28 +379,25 @@ public static class DearImGuiInjectionPlus
                     Log.Warning($"[DearImGuiInjectionPlus] Error saving ini settings: {ex.Message}");
                 }
 
-                ImGui.GetIO().NativePtr->IniFilename = null;
-
-                if (Context != IntPtr.Zero)
+                var io = ImGui.GetIO();
+                if (io.NativePtr != null)
                 {
-                    ImGui.DestroyContext(Context);
-                    Context = IntPtr.Zero;
-                }
-
-                Marshal.FreeHGlobal(iniPtr);
-            }
-            else
-            {
-                if (Context != IntPtr.Zero)
-                {
-                    ImGui.DestroyContext(Context);
-                    Context = IntPtr.Zero;
+                    io.NativePtr->IniFilename = null;
                 }
             }
-            IO = null;
 
-            Initialized = false;
+            ImGui.DestroyContext(Context);
+            Context = IntPtr.Zero;
         }
+
+        if (_iniFilenamePtr != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(_iniFilenamePtr);
+            _iniFilenamePtr = IntPtr.Zero;
+        }
+
+        IO = null;
+        Initialized = false;
     }
 
     private static bool _implementationInitialized = false;

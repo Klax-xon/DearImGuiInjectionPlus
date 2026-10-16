@@ -145,10 +145,7 @@ internal static class InputManager
             }
         }
 
-        if (!RendererFinder.RendererFinder.IsShuttingDown)
-        {
-            ImGuiWin32Impl.Shutdown();
-        }
+        ImGuiWin32Impl.Shutdown();
     }
 
     public static VirtualKey ToggleKey => DearImGuiInjectionPlus.CursorVisibilityToggle != null
