@@ -736,12 +736,14 @@ public static class ImGuiDX12Impl
         ImGui.GetIO().BackendFlags = ImGui.GetIO().BackendFlags | ImGuiBackendFlags.RendererHasVtxOffset;
 
         _device = new Device(new IntPtr(device));
+        GC.SuppressFinalize(_device);
         RTVFormat = rtv_format;
         hFontSrvCpuDescHandle = font_srv_cpu_desc_handle;
         hFontSrvGpuDescHandle = font_srv_gpu_desc_handle;
         pFrameResources = new RenderBuffer[num_frames_in_flight];
         numFramesInFlight = (uint)num_frames_in_flight;
         pd3dSrvDescHeap = new DescriptorHeap((IntPtr)cbv_srv_heap);
+        GC.SuppressFinalize(pd3dSrvDescHeap);
         frameIndex = uint.MaxValue;
 
         // Create buffers with a default size (they will later be grown as needed)

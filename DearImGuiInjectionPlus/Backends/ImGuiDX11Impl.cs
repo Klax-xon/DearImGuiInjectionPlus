@@ -48,11 +48,18 @@ public static class ImGuiDX11Impl
         public fixed float mvp[4 * 4];
     }
 
-    // Functions
-    static unsafe void ImGui_ImplDX11_SetupRenderState(ImDrawData* draw_data, IntPtr ID3D11DeviceContextPtr)
-    {
-        var deviceContext = new DeviceContext(ID3D11DeviceContextPtr);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private unsafe delegate void PSSetShaderResourcesDelegate(
+        IntPtr thisPtr,
+        uint startSlot,
+        uint numViews,
+        IntPtr* ppShaderResourceViews);
 
+    private static PSSetShaderResourcesDelegate _psSetShaderResources;
+
+    // Functions
+    static unsafe void ImGui_ImplDX11_SetupRenderState(ImDrawData* draw_data, DeviceContext deviceContext)
+    {
         // Setup viewport
         deviceContext.Rasterizer.SetViewport(0, 0, draw_data->DisplaySize.X, draw_data->DisplaySize.Y);
 
@@ -97,6 +104,13 @@ public static class ImGuiDX11Impl
             return;
 
         DeviceContext ctx = _deviceContext;
+
+        if (_psSetShaderResources == null)
+        {
+            IntPtr vtable = *(IntPtr*)ctx.NativePointer;
+            IntPtr methodPtr = *(IntPtr*)(vtable + 8 * IntPtr.Size);
+            _psSetShaderResources = Marshal.GetDelegateForFunctionPointer<PSSetShaderResourcesDelegate>(methodPtr);
+        }
 
         // Create and grow vertex/index buffers if needed
         if (_vertexBuffer == null || _vertexBufferSize < draw_data->TotalVtxCount)
@@ -193,7 +207,7 @@ public static class ImGuiDX11Impl
 
         ctx.UnmapSubresource(_vertexConstantBuffer, 0);
 
-        ImGui_ImplDX11_SetupRenderState(draw_data, ctx.NativePointer);
+        ImGui_ImplDX11_SetupRenderState(draw_data, ctx);
 
         // Render command lists
         // (Because we merged all buffers into a single one, we maintain our own offset into them)
@@ -213,7 +227,7 @@ public static class ImGuiDX11Impl
                     // User callback, registered via ImDrawList::AddCallback()
                     // (ImDrawCallback_ResetRenderState is a special callback value used by the user to request the renderer to reset render state.)
                     if (pcmd.UserCallback == new IntPtr(-1))
-                        ImGui_ImplDX11_SetupRenderState(draw_data, ctx.NativePointer);
+                        ImGui_ImplDX11_SetupRenderState(draw_data, ctx);
                     else
                         userCallback(cmd_list, &pcmd);
                 }
@@ -229,7 +243,10 @@ public static class ImGuiDX11Impl
                     RawRectangle r = new((int)clip_min.X, (int)clip_min.Y, (int)clip_max.X, (int)clip_max.Y);
                     ctx.Rasterizer.SetScissorRectangles(r);
 
-                    ctx.PixelShader.SetShaderResource(0, new(pcmd.TextureId));
+                    // MEM-04: Bind texture via native ID3D11DeviceContext::PSSetShaderResources vtable call (slot 8)
+                    // Avoids allocating transient SharpDX ShaderResourceView wrappers and subsequent finalizer thread over-releases
+                    IntPtr textureId = pcmd.TextureId;
+                    _psSetShaderResources(ctx.NativePointer, 0, 1, &textureId);
                     ctx.DrawIndexed((int)pcmd.ElemCount, (int)(pcmd.IdxOffset + global_idx_offset), (int)(pcmd.VtxOffset + global_vtx_offset));
                 }
             }
@@ -697,6 +714,7 @@ public static class ImGuiDX11Impl
         // we don't own these, so no Dispose()
         _device = null;
         _deviceContext = null;
+        _psSetShaderResources = null;
 
         if (_renderNamePtr != IntPtr.Zero)
         {
@@ -727,6 +745,12 @@ public static class ImGuiDX11Impl
         ImGui.GetIO().NativePtr->BackendRendererName = (byte*)_renderNamePtr.ToPointer();
 
         _device = new((IntPtr)device);
+        GC.SuppressFinalize(_device);
         _deviceContext = new((IntPtr)deviceContext);
+        GC.SuppressFinalize(_deviceContext);
+
+        IntPtr vtable = *(IntPtr*)_deviceContext.NativePointer;
+        IntPtr psSetShaderResourcesPtr = *(IntPtr*)(vtable + 8 * IntPtr.Size);
+        _psSetShaderResources = Marshal.GetDelegateForFunctionPointer<PSSetShaderResourcesDelegate>(psSetShaderResourcesPtr);
     }
 }

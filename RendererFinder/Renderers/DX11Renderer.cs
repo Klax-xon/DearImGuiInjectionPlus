@@ -249,7 +249,11 @@ public class DX11Renderer : IRenderer
         {
             _onPresentAction = null;
         }
-        _cachedSwapChain = null;
+        if (_cachedSwapChain != null)
+        {
+            GC.SuppressFinalize(_cachedSwapChain);
+            _cachedSwapChain = null;
+        }
         _consecutivePresentErrors = 0;
         _circuitBreakerTripUntil = 0;
 
@@ -460,9 +464,13 @@ public class DX11Renderer : IRenderer
                     }
                 }
 
-                var swapChain = (_cachedSwapChain != null && _cachedSwapChain.NativePointer == self)
-                    ? _cachedSwapChain
-                    : (_cachedSwapChain = new SwapChain(self));
+                var swapChain = _cachedSwapChain;
+                if (swapChain == null || swapChain.NativePointer != self)
+                {
+                    swapChain = new SwapChain(self);
+                    GC.SuppressFinalize(swapChain);
+                    _cachedSwapChain = swapChain;
+                }
 
                 try
                 {

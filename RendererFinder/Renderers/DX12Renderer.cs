@@ -187,7 +187,11 @@ public class DX12Renderer : IRenderer
         {
             _onPresentAction = null;
         }
-        _cachedSwapChain = null;
+        if (_cachedSwapChain != null)
+        {
+            GC.SuppressFinalize(_cachedSwapChain);
+            _cachedSwapChain = null;
+        }
         CapturedCommandQueue = IntPtr.Zero;
         _candidateCommandQueue = IntPtr.Zero;
         _candidateThreadId = 0;
@@ -282,9 +286,13 @@ public class DX12Renderer : IRenderer
                 }
             }
 
-            var swapChain = (_cachedSwapChain != null && _cachedSwapChain.NativePointer == self)
-                ? _cachedSwapChain
-                : (_cachedSwapChain = new SwapChain3(self));
+            var swapChain = _cachedSwapChain;
+            if (swapChain == null || swapChain.NativePointer != self)
+            {
+                swapChain = new SwapChain3(self);
+                GC.SuppressFinalize(swapChain);
+                _cachedSwapChain = swapChain;
+            }
 
             try
             {
@@ -336,6 +344,7 @@ public class DX12Renderer : IRenderer
             try
             {
                 var checkQueue = new CommandQueue(self);
+                GC.SuppressFinalize(checkQueue);
                 var queueType = checkQueue.Description.Type;
                 if (queueType == CommandListType.Direct)
                 {
@@ -385,6 +394,7 @@ public class DX12Renderer : IRenderer
                 if (action != null && CapturedCommandQueue == self)
                 {
                     var commandQueue = new CommandQueue(self);
+                    GC.SuppressFinalize(commandQueue);
                     action.Invoke(commandQueue, (uint)numCommandLists, ppCommandLists);
                 }
             }

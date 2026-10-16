@@ -82,6 +82,7 @@ internal static class ImGuiDX12
             if (queuePtr != IntPtr.Zero && _commandQueue == null)
             {
                 _commandQueue = new CommandQueue(queuePtr);
+                GC.SuppressFinalize(_commandQueue);
                 Log.Info($"[ImGuiDX12] Acquired CommandQueue on frame 1: {queuePtr:X8}");
             }
 
@@ -202,6 +203,7 @@ internal static class ImGuiDX12
                     Log.Info($"[ImGuiDX12] Successfully captured Direct CommandQueue: {commandQueue.NativePointer:X8}");
                     System.Runtime.InteropServices.Marshal.AddRef(commandQueue.NativePointer);
                     _commandQueue = new CommandQueue(commandQueue.NativePointer);
+                    GC.SuppressFinalize(_commandQueue);
                 }
             }
 
@@ -274,6 +276,7 @@ internal static class ImGuiDX12
                     if (queuePtr != IntPtr.Zero)
                     {
                         _commandQueue = new CommandQueue(queuePtr);
+                        GC.SuppressFinalize(_commandQueue);
                         RendererFinder.Renderers.DX12Renderer.CapturedCommandQueue = queuePtr;
                         Log.Info($"[ImGuiDX12] Acquired CommandQueue on present: {queuePtr:X8}");
                     }
