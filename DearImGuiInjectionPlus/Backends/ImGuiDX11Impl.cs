@@ -293,7 +293,7 @@ public static class ImGuiDX11Impl
         ushort* idx_dst = (ushort*)idx_resource.DataPointer;
         for (int n = 0; n < draw_data->CmdListsCount; n++)
         {
-            ImDrawList* cmd_list = draw_data->CmdLists[n];
+            ImDrawList* cmd_list = ((ImDrawList**)draw_data->CmdLists.Data)[n];
 
             var len = cmd_list->VtxBuffer.Size * sizeof(ImDrawVert);
             System.Buffer.MemoryCopy((void*)cmd_list->VtxBuffer.Data, vtx_dst, len, len);
@@ -349,7 +349,7 @@ public static class ImGuiDX11Impl
         Vector2 clip_off = draw_data->DisplayPos;
         for (int n = 0; n < draw_data->CmdListsCount; n++)
         {
-            ImDrawList* cmd_list = draw_data->CmdLists[n];
+            ImDrawList* cmd_list = ((ImDrawList**)draw_data->CmdLists.Data)[n];
             for (int cmd_i = 0; cmd_i < cmd_list->CmdBuffer.Size; cmd_i++)
             {
                 var pcmd = cmd_list->CmdBuffer.Ref<ImDrawCmd>(cmd_i);
