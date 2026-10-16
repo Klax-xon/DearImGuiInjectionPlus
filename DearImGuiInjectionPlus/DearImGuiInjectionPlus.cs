@@ -101,11 +101,16 @@ public static class DearImGuiInjectionPlus
     private static readonly object _windowLock = new();
 
     // Tab Registry for Menu Bar navigation
-    public sealed class RegisteredTab
+    public sealed class RegisteredTab : IDisposable
     {
         public string Category { get; set; }
         public string Title { get; set; }
         public Action Callback { get; set; }
+
+        public void Dispose()
+        {
+            UnregisterTab(this);
+        }
     }
     private static readonly List<RegisteredTab> _registeredTabs = new();
     private static RegisteredTab[] _tabsSnapshot = Array.Empty<RegisteredTab>();
@@ -148,21 +153,74 @@ public static class DearImGuiInjectionPlus
 
     /// <summary>
     /// Registers a menu bar tab item under a specified top-level menu bar category.
+    /// Returns an <see cref="IDisposable"/> token that unregisters the tab when disposed.
     /// </summary>
-    public static void RegisterTab(string category, string title, Action callback)
+    public static IDisposable RegisterTab(string category, string title, Action callback)
     {
         if (callback == null)
-            return;
+            return null;
+
+        string cat = category ?? "Mods";
+        string tit = title ?? "Untitled";
+
+        var tab = new RegisteredTab
+        {
+            Category = cat,
+            Title = tit,
+            Callback = callback
+        };
 
         lock (_tabLock)
         {
-            _registeredTabs.Add(new RegisteredTab
-            {
-                Category = category ?? "Mods",
-                Title = title ?? "Untitled",
-                Callback = callback
-            });
+            // Remove any existing tab with the same category and title to prevent duplicate UI entries
+            _registeredTabs.RemoveAll(t => string.Equals(t.Category, cat, StringComparison.Ordinal) &&
+                                           string.Equals(t.Title, tit, StringComparison.Ordinal));
+            _registeredTabs.Add(tab);
             _tabsSnapshot = _registeredTabs.ToArray();
+        }
+
+        return tab;
+    }
+
+    /// <summary>
+    /// Unregisters all menu bar tab items matching the specified category and title.
+    /// </summary>
+    public static bool UnregisterTab(string category, string title)
+    {
+        string cat = category ?? "Mods";
+        string tit = title ?? "Untitled";
+
+        lock (_tabLock)
+        {
+            int removed = _registeredTabs.RemoveAll(t => string.Equals(t.Category, cat, StringComparison.Ordinal) &&
+                                                         string.Equals(t.Title, tit, StringComparison.Ordinal));
+            if (removed > 0)
+            {
+                _tabsSnapshot = _registeredTabs.ToArray();
+                return true;
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Unregisters a previously registered menu bar tab item.
+    /// </summary>
+    public static bool UnregisterTab(RegisteredTab tab)
+    {
+        if (tab == null)
+            return false;
+
+        lock (_tabLock)
+        {
+            if (_registeredTabs.Remove(tab))
+            {
+                _tabsSnapshot = _registeredTabs.ToArray();
+                return true;
+            }
+
+            return false;
         }
     }
 
@@ -445,6 +503,7 @@ public static class DearImGuiInjectionPlus
                             catch (Exception ex)
                             {
                                 Log.Error($"[DearImGuiInjectionPlus] Error rendering tab '{tab.Title}': {ex}");
+                                RestoreImGuiWindowStack();
                             }
                         }
                         ImGui.EndMenu();
@@ -469,6 +528,7 @@ public static class DearImGuiInjectionPlus
                 catch (Exception ex)
                 {
                     Log.Error($"[DearImGuiInjectionPlus] Error rendering window '{win.Title}': {ex}");
+                    RestoreImGuiStack();
                 }
             }
         }
@@ -484,13 +544,56 @@ public static class DearImGuiInjectionPlus
             catch (Exception ex)
             {
                 Log.Error($"[DearImGuiInjectionPlus] Error in Render callback: {ex}");
+                RestoreImGuiStack();
             }
         }
+
+        // Safety net: ensure any unclosed windows or unbalanced stacks are recovered before EndFrame/Render
+        RestoreImGuiStack();
 
         ImGui.EndFrame();
         ImGui.Render();
 
         _wantCaptureMouse = IO.NativePtr != null && IO.WantCaptureMouse;
         _wantCaptureKeyboard = IO.NativePtr != null && IO.WantCaptureKeyboard;
+    }
+
+    private static class Native
+    {
+        [DllImport("cimgui", CallingConvention = CallingConvention.Cdecl, EntryPoint = "igErrorCheckEndFrameRecover")]
+        public static extern void ErrorCheckEndFrameRecover(IntPtr logCallback, IntPtr userData);
+
+        [DllImport("cimgui", CallingConvention = CallingConvention.Cdecl, EntryPoint = "igErrorCheckEndWindowRecover")]
+        public static extern void ErrorCheckEndWindowRecover(IntPtr logCallback, IntPtr userData);
+    }
+
+    /// <summary>
+    /// Safely unwinds any dangling ImGui window and internal state stacks back to baseline.
+    /// </summary>
+    public static void RestoreImGuiStack()
+    {
+        try
+        {
+            Native.ErrorCheckEndFrameRecover(IntPtr.Zero, IntPtr.Zero);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[DearImGuiInjectionPlus] Error during ImGui stack recovery: {ex}");
+        }
+    }
+
+    /// <summary>
+    /// Safely unwinds any dangling ImGui state stacks on the current window back to its begin state.
+    /// </summary>
+    public static void RestoreImGuiWindowStack()
+    {
+        try
+        {
+            Native.ErrorCheckEndWindowRecover(IntPtr.Zero, IntPtr.Zero);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[DearImGuiInjectionPlus] Error during ImGui window stack recovery: {ex}");
+        }
     }
 }

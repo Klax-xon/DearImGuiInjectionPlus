@@ -103,6 +103,7 @@ public class TestPlugin : BaseUnityPlugin
     {
         DearImGuiInjectionPlus.DearImGuiInjectionPlus.Render -= RenderLegacyOverlay;
         DearImGuiInjectionPlus.DearImGuiInjectionPlus.UnregisterWindow(_modWindow);
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.UnregisterTab("Mods", "Toggle Sample View");
     }
 
     private void Update()
