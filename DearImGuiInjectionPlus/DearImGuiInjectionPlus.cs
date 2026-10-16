@@ -32,10 +32,16 @@ public static class DearImGuiInjectionPlus
 
     public static string AssetsFolderPath { get; private set; }
 
+    private static volatile bool _isCursorVisible;
+
     /// <summary>
     /// True if the Dear ImGui GUI cursor / overlay is visible.
     /// </summary>
-    public static bool IsCursorVisible { get; internal set; }
+    public static bool IsCursorVisible
+    {
+        get => _isCursorVisible;
+        internal set => _isCursorVisible = value;
+    }
 
     private static volatile bool _wantCaptureMouse;
     private static volatile bool _wantCaptureKeyboard;

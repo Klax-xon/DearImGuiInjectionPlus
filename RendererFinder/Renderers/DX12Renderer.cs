@@ -13,7 +13,7 @@ public class DX12Renderer : IRenderer
 {
     private static readonly List<object> _cache = new();
     private static SwapChain3 _cachedSwapChain;
-    private static bool _loggedPresent = false;
+    private static volatile bool _loggedPresent = false;
     private static readonly Guid D3D12DeviceGuid = new("1898197d-37b4-45ae-80f7-745f44453b36");
 
     public static volatile bool _captureQueue = true;
@@ -24,7 +24,7 @@ public class DX12Renderer : IRenderer
         set => _captureQueue = value;
     }
 
-    private static IntPtr _capturedCommandQueue = IntPtr.Zero;
+    private static volatile IntPtr _capturedCommandQueue = IntPtr.Zero;
 
     public static IntPtr CapturedCommandQueue
     {
@@ -39,13 +39,19 @@ public class DX12Renderer : IRenderer
         }
     }
 
-    public static IntPtr ExpectedDevicePointer { get; set; } = IntPtr.Zero;
+    private static volatile IntPtr _expectedDevicePointer = IntPtr.Zero;
+
+    public static IntPtr ExpectedDevicePointer
+    {
+        get => _expectedDevicePointer;
+        set => _expectedDevicePointer = value;
+    }
 
     [ThreadStatic]
     private static IntPtr _lastDirectQueueOnCurrentThread;
 
-    private static IntPtr _candidateCommandQueue = IntPtr.Zero;
-    private static uint _candidateThreadId = 0;
+    private static volatile IntPtr _candidateCommandQueue = IntPtr.Zero;
+    private static volatile uint _candidateThreadId = 0;
 
     [ThreadStatic]
     private static bool _isInsideExecuteCommandLists;
@@ -56,10 +62,24 @@ public class DX12Renderer : IRenderer
         set => _isInsideExecuteCommandLists = value;
     }
 
+    private static readonly object _presentLock = new();
+
     public static event Action<SwapChain3, uint, uint, IntPtr> OnPresent
     {
-        add => _onPresentAction += value;
-        remove => _onPresentAction -= value;
+        add
+        {
+            lock (_presentLock)
+            {
+                _onPresentAction += value;
+            }
+        }
+        remove
+        {
+            lock (_presentLock)
+            {
+                _onPresentAction -= value;
+            }
+        }
     }
     private static Action<SwapChain3, uint, uint, IntPtr> _onPresentAction;
 
@@ -156,7 +176,10 @@ public class DX12Renderer : IRenderer
     public void Dispose()
     {
         _captureQueue = false;
-        _onPresentAction = null;
+        lock (_presentLock)
+        {
+            _onPresentAction = null;
+        }
         _cachedSwapChain = null;
         CapturedCommandQueue = IntPtr.Zero;
         _candidateCommandQueue = IntPtr.Zero;
@@ -238,7 +261,8 @@ public class DX12Renderer : IRenderer
         if (RendererFinder.IsShuttingDown)
             return;
 
-        if (_onPresentAction != null)
+        var action = _onPresentAction;
+        if (action != null)
         {
             var swapChain = (_cachedSwapChain != null && _cachedSwapChain.NativePointer == self)
                 ? _cachedSwapChain
@@ -246,7 +270,7 @@ public class DX12Renderer : IRenderer
 
             try
             {
-                _onPresentAction.Invoke(swapChain, syncInterval, flags, IntPtr.Zero);
+                action.Invoke(swapChain, syncInterval, flags, IntPtr.Zero);
             }
             catch (Exception e)
             {

@@ -46,7 +46,7 @@ public class DX11Renderer : IRenderer
 {
     private static readonly List<object> _cache = new();
     private static SwapChain _cachedSwapChain;
-    private static bool _loggedPresent = false;
+    private static volatile bool _loggedPresent = false;
     private const uint DXGI_PRESENT_TEST = 0x00000001;
 
     [ThreadStatic]
@@ -66,10 +66,24 @@ public class DX11Renderer : IRenderer
     private static readonly CDXGISwapChainPresent1Delegate _swapChainPresent1HookDelegate = SwapChainPresent1Hook;
     private static Hook<CDXGISwapChainPresent1Delegate> _swapChainPresent1Hook;
 
+    private static readonly object _presentLock = new();
+
     public static event Action<SwapChain, uint, uint> OnPresent
     {
-        add => _onPresentAction += value;
-        remove => _onPresentAction -= value;
+        add
+        {
+            lock (_presentLock)
+            {
+                _onPresentAction += value;
+            }
+        }
+        remove
+        {
+            lock (_presentLock)
+            {
+                _onPresentAction -= value;
+            }
+        }
     }
     private static Action<SwapChain, uint, uint> _onPresentAction;
 
@@ -224,7 +238,10 @@ public class DX11Renderer : IRenderer
     public void Dispose()
     {
         RendererFinder.IsShuttingDown = true;
-        _onPresentAction = null;
+        lock (_presentLock)
+        {
+            _onPresentAction = null;
+        }
         _cachedSwapChain = null;
 
         try
@@ -406,7 +423,8 @@ public class DX11Renderer : IRenderer
 
         if (RendererFinder.RendererKind == RendererKind.D3D11)
         {
-            if (_onPresentAction != null)
+            var action = _onPresentAction;
+            if (action != null)
             {
                 var swapChain = (_cachedSwapChain != null && _cachedSwapChain.NativePointer == self)
                     ? _cachedSwapChain
@@ -414,7 +432,7 @@ public class DX11Renderer : IRenderer
 
                 try
                 {
-                    _onPresentAction.Invoke(swapChain, syncInterval, flags);
+                    action.Invoke(swapChain, syncInterval, flags);
                 }
                 catch (Exception e)
                 {

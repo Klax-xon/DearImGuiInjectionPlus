@@ -12,15 +12,39 @@ public delegate int QueryInterfaceDelegate(IntPtr self, [In] ref Guid riid, out 
 
 public static class RendererFinder
 {
-    public static RendererKind RendererKind { get; internal set; } = RendererKind.None;
+    private static volatile RendererKind _rendererKind = RendererKind.None;
 
-    public static RendererKind TargetRendererKind { get; set; } = RendererKind.None;
+    public static RendererKind RendererKind
+    {
+        get => _rendererKind;
+        internal set => _rendererKind = value;
+    }
 
-    public static bool IsBackendInitialized { get; set; } = false;
+    private static volatile RendererKind _targetRendererKind = RendererKind.None;
+
+    public static RendererKind TargetRendererKind
+    {
+        get => _targetRendererKind;
+        set => _targetRendererKind = value;
+    }
+
+    private static volatile bool _isBackendInitialized = false;
+
+    public static bool IsBackendInitialized
+    {
+        get => _isBackendInitialized;
+        set => _isBackendInitialized = value;
+    }
 
     public static readonly RendererKind[] AvailableRenderers = { RendererKind.D3D11, RendererKind.D3D12 };
 
-    public static bool IsShuttingDown { get; set; } = false;
+    private static volatile bool _isShuttingDown = false;
+
+    public static bool IsShuttingDown
+    {
+        get => _isShuttingDown;
+        set => _isShuttingDown = value;
+    }
 
     private static DX11Renderer _dx11Renderer;
     private static DX12Renderer _dx12Renderer;
