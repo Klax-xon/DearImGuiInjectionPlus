@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Numerics;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using ImGuiNET;
@@ -56,6 +58,137 @@ public static class ImGuiDX11Impl
         IntPtr* ppShaderResourceViews);
 
     private static PSSetShaderResourcesDelegate _psSetShaderResources;
+
+    private static readonly Dictionary<IntPtr, ImDrawUserCallBack> _userCallbackCache = new();
+
+    private delegate void GetRenderTargetsInternalDelegate(
+        OutputMergerStage stage,
+        int numViews,
+        RenderTargetView[] renderTargetViewsOut,
+        out DepthStencilView depthStencilViewOut);
+
+    private delegate void GetConstantBuffersInternalDelegate(
+        CommonShaderStage stage,
+        int startSlot,
+        int numBuffers,
+        Buffer[] constantBuffersRef);
+
+    private delegate void GetSamplersInternalDelegate(
+        CommonShaderStage stage,
+        int startSlot,
+        int numSamplers,
+        SamplerState[] samplersRef);
+
+    private delegate void GetShaderResourcesInternalDelegate(
+        CommonShaderStage stage,
+        int startSlot,
+        int numViews,
+        ShaderResourceView[] shaderResourceViewsRef);
+
+    private static readonly GetRenderTargetsInternalDelegate _getRenderTargetsInternal;
+    private static readonly GetConstantBuffersInternalDelegate _getConstantBuffersInternal;
+    private static readonly GetSamplersInternalDelegate _getSamplersInternal;
+    private static readonly GetShaderResourcesInternalDelegate _getShaderResourcesInternal;
+
+    private static readonly StateBackup _stateBackup = new();
+    private static readonly Rectangle[][] _scissorRectPool = CreateScissorRectPool();
+
+    private static Rectangle[][] CreateScissorRectPool()
+    {
+        var pool = new Rectangle[17][];
+        for (int i = 0; i <= 16; i++)
+        {
+            pool[i] = new Rectangle[i];
+        }
+        return pool;
+    }
+
+    static ImGuiDX11Impl()
+    {
+        try
+        {
+            var omMethod = typeof(OutputMergerStage).GetMethod(
+                "GetRenderTargets",
+                BindingFlags.NonPublic | BindingFlags.Instance,
+                null,
+                new[] { typeof(int), typeof(RenderTargetView[]), typeof(DepthStencilView).MakeByRefType() },
+                null);
+
+            if (omMethod != null)
+            {
+                _getRenderTargetsInternal = (GetRenderTargetsInternalDelegate)Delegate.CreateDelegate(
+                    typeof(GetRenderTargetsInternalDelegate),
+                    omMethod);
+            }
+        }
+        catch
+        {
+            _getRenderTargetsInternal = null;
+        }
+
+        try
+        {
+            var cbMethod = typeof(CommonShaderStage).GetMethod(
+                "GetConstantBuffers",
+                BindingFlags.NonPublic | BindingFlags.Instance,
+                null,
+                new[] { typeof(int), typeof(int), typeof(Buffer[]) },
+                null);
+
+            if (cbMethod != null)
+            {
+                _getConstantBuffersInternal = (GetConstantBuffersInternalDelegate)Delegate.CreateDelegate(
+                    typeof(GetConstantBuffersInternalDelegate),
+                    cbMethod);
+            }
+        }
+        catch
+        {
+            _getConstantBuffersInternal = null;
+        }
+
+        try
+        {
+            var smMethod = typeof(CommonShaderStage).GetMethod(
+                "GetSamplers",
+                BindingFlags.NonPublic | BindingFlags.Instance,
+                null,
+                new[] { typeof(int), typeof(int), typeof(SamplerState[]) },
+                null);
+
+            if (smMethod != null)
+            {
+                _getSamplersInternal = (GetSamplersInternalDelegate)Delegate.CreateDelegate(
+                    typeof(GetSamplersInternalDelegate),
+                    smMethod);
+            }
+        }
+        catch
+        {
+            _getSamplersInternal = null;
+        }
+
+        try
+        {
+            var srMethod = typeof(CommonShaderStage).GetMethod(
+                "GetShaderResources",
+                BindingFlags.NonPublic | BindingFlags.Instance,
+                null,
+                new[] { typeof(int), typeof(int), typeof(ShaderResourceView[]) },
+                null);
+
+            if (srMethod != null)
+            {
+                _getShaderResourcesInternal = (GetShaderResourcesInternalDelegate)Delegate.CreateDelegate(
+                    typeof(GetShaderResourcesInternalDelegate),
+                    srMethod);
+            }
+        }
+        catch
+        {
+            _getShaderResourcesInternal = null;
+        }
+    }
 
     // Functions
     static unsafe void ImGui_ImplDX11_SetupRenderState(ImDrawData* draw_data, DeviceContext deviceContext)
@@ -222,14 +355,21 @@ public static class ImGuiDX11Impl
                 var pcmd = cmd_list->CmdBuffer.Ref<ImDrawCmd>(cmd_i);
                 if (pcmd.UserCallback != IntPtr.Zero)
                 {
-                    var userCallback = Marshal.GetDelegateForFunctionPointer<ImDrawUserCallBack>(pcmd.UserCallback);
-
                     // User callback, registered via ImDrawList::AddCallback()
                     // (ImDrawCallback_ResetRenderState is a special callback value used by the user to request the renderer to reset render state.)
                     if (pcmd.UserCallback == new IntPtr(-1))
+                    {
                         ImGui_ImplDX11_SetupRenderState(draw_data, ctx);
+                    }
                     else
+                    {
+                        if (!_userCallbackCache.TryGetValue(pcmd.UserCallback, out var userCallback))
+                        {
+                            userCallback = Marshal.GetDelegateForFunctionPointer<ImDrawUserCallBack>(pcmd.UserCallback);
+                            _userCallbackCache[pcmd.UserCallback] = userCallback;
+                        }
                         userCallback(cmd_list, &pcmd);
+                    }
                 }
                 else
                 {
@@ -259,19 +399,21 @@ public static class ImGuiDX11Impl
     {
         const int D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE = 16;
 
-        var backup = new StateBackup
-        {
-            // IA
-            InputLayout = ctx.InputAssembler.InputLayout,
-            PrimitiveTopology = ctx.InputAssembler.PrimitiveTopology,
-            VertexBuffers = new Buffer[1],
-            VertexBufferStrides = new int[1],
-            VertexBufferOffsets = new int[1],
+        var backup = _stateBackup;
+        backup.Dispose();
 
-            // RS - Preallocate to avoid SharpDX parameterless GetScissorRectangles IndexOutOfRangeException when count is 0
-            ScissorRects = new Rectangle[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE],
-            Viewports = new RawViewportF[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE]
-        };
+        if (backup.RenderTargetViews == null || backup.RenderTargetViews.Length < OutputMergerStage.SimultaneousRenderTargetCount)
+            backup.RenderTargetViews = new RenderTargetView[OutputMergerStage.SimultaneousRenderTargetCount];
+        if (backup.VSConstantBuffers == null || backup.VSConstantBuffers.Length < 1)
+            backup.VSConstantBuffers = new Buffer[1];
+        if (backup.PSSamplers == null || backup.PSSamplers.Length < 1)
+            backup.PSSamplers = new SamplerState[1];
+        if (backup.PSResourceViews == null || backup.PSResourceViews.Length < 1)
+            backup.PSResourceViews = new ShaderResourceView[1];
+
+        // IA
+        backup.InputLayout = ctx.InputAssembler.InputLayout;
+        backup.PrimitiveTopology = ctx.InputAssembler.PrimitiveTopology;
         ctx.InputAssembler.GetIndexBuffer(out backup.IndexBuffer, out backup.IndexBufferFormat, out backup.IndexBufferOffset);
         ctx.InputAssembler.GetVertexBuffers(0, 1, backup.VertexBuffers, backup.VertexBufferStrides, backup.VertexBufferOffsets);
 
@@ -299,11 +441,25 @@ public static class ImGuiDX11Impl
         // OM
         backup.BlendState = ctx.OutputMerger.GetBlendState(out backup.BlendFactor, out backup.SampleMask);
         backup.DepthStencilState = ctx.OutputMerger.GetDepthStencilState(out backup.DepthStencilRef);
-        backup.RenderTargetViews = ctx.OutputMerger.GetRenderTargets(OutputMergerStage.SimultaneousRenderTargetCount, out backup.DepthStencilView);
+        if (_getRenderTargetsInternal != null)
+        {
+            _getRenderTargetsInternal(ctx.OutputMerger, OutputMergerStage.SimultaneousRenderTargetCount, backup.RenderTargetViews, out backup.DepthStencilView);
+        }
+        else
+        {
+            backup.RenderTargetViews = ctx.OutputMerger.GetRenderTargets(OutputMergerStage.SimultaneousRenderTargetCount, out backup.DepthStencilView);
+        }
 
         // VS (slot 0 constant buffer only)
         backup.VS = ctx.VertexShader.Get();
-        backup.VSConstantBuffers = ctx.VertexShader.GetConstantBuffers(0, 1);
+        if (_getConstantBuffersInternal != null)
+        {
+            _getConstantBuffersInternal(ctx.VertexShader, 0, 1, backup.VSConstantBuffers);
+        }
+        else
+        {
+            backup.VSConstantBuffers = ctx.VertexShader.GetConstantBuffers(0, 1);
+        }
 
         // GS, HS, DS, CS (shader instances only)
         backup.GS = ctx.GeometryShader.Get();
@@ -313,8 +469,23 @@ public static class ImGuiDX11Impl
 
         // PS (slot 0 sampler and slot 0 SRV only)
         backup.PS = ctx.PixelShader.Get();
-        backup.PSSamplers = ctx.PixelShader.GetSamplers(0, 1);
-        backup.PSResourceViews = ctx.PixelShader.GetShaderResources(0, 1);
+        if (_getSamplersInternal != null)
+        {
+            _getSamplersInternal(ctx.PixelShader, 0, 1, backup.PSSamplers);
+        }
+        else
+        {
+            backup.PSSamplers = ctx.PixelShader.GetSamplers(0, 1);
+        }
+
+        if (_getShaderResourcesInternal != null)
+        {
+            _getShaderResourcesInternal(ctx.PixelShader, 0, 1, backup.PSResourceViews);
+        }
+        else
+        {
+            backup.PSResourceViews = ctx.PixelShader.GetShaderResources(0, 1);
+        }
 
         return backup;
     }
@@ -332,9 +503,9 @@ public static class ImGuiDX11Impl
 
         // RS
         ctx.Rasterizer.State = old.RS;
-        if (old.ScissorRectsCount > 0)
+        if (old.ScissorRectsCount > 0 && old.ScissorRectsCount <= 16)
         {
-            var rects = new Rectangle[old.ScissorRectsCount];
+            var rects = _scissorRectPool[old.ScissorRectsCount];
             Array.Copy(old.ScissorRects, rects, old.ScissorRectsCount);
             ctx.Rasterizer.SetScissorRectangles(rects);
         }
@@ -384,21 +555,23 @@ public static class ImGuiDX11Impl
 
     internal sealed class StateBackup : IDisposable
     {
+        public const int MaxViewportsAndScissorRects = 16;
+
         // IA
         public InputLayout InputLayout;
         public PrimitiveTopology PrimitiveTopology;
         public Buffer IndexBuffer;
         public SharpDX.DXGI.Format IndexBufferFormat;
         public int IndexBufferOffset;
-        public Buffer[] VertexBuffers;
-        public int[] VertexBufferStrides;
-        public int[] VertexBufferOffsets;
+        public readonly Buffer[] VertexBuffers = new Buffer[1];
+        public readonly int[] VertexBufferStrides = new int[1];
+        public readonly int[] VertexBufferOffsets = new int[1];
 
         // RS
         public RasterizerState RS;
-        public Rectangle[] ScissorRects;
+        public readonly Rectangle[] ScissorRects = new Rectangle[MaxViewportsAndScissorRects];
         public int ScissorRectsCount;
-        public RawViewportF[] Viewports;
+        public readonly RawViewportF[] Viewports = new RawViewportF[MaxViewportsAndScissorRects];
         public int ViewportsCount;
 
         // OM
@@ -408,11 +581,11 @@ public static class ImGuiDX11Impl
         public DepthStencilState DepthStencilState;
         public int DepthStencilRef;
         public DepthStencilView DepthStencilView;
-        public RenderTargetView[] RenderTargetViews;
+        public RenderTargetView[] RenderTargetViews = new RenderTargetView[OutputMergerStage.SimultaneousRenderTargetCount];
 
         // Shaders & Resources
         public VertexShader VS;
-        public Buffer[] VSConstantBuffers;
+        public Buffer[] VSConstantBuffers = new Buffer[1];
 
         public GeometryShader GS;
         public HullShader HS;
@@ -420,17 +593,11 @@ public static class ImGuiDX11Impl
         public ComputeShader CS;
 
         public PixelShader PS;
-        public SamplerState[] PSSamplers;
-        public ShaderResourceView[] PSResourceViews;
-
-        private bool _disposed;
+        public SamplerState[] PSSamplers = new SamplerState[1];
+        public ShaderResourceView[] PSResourceViews = new ShaderResourceView[1];
 
         public void Dispose()
         {
-            if (_disposed)
-                return;
-            _disposed = true;
-
             InputLayout?.Dispose();
             InputLayout = null;
 
@@ -438,7 +605,6 @@ public static class ImGuiDX11Impl
             IndexBuffer = null;
 
             DisposeAll(VertexBuffers);
-            VertexBuffers = null;
 
             RS?.Dispose();
             RS = null;
@@ -453,13 +619,11 @@ public static class ImGuiDX11Impl
             DepthStencilView = null;
 
             DisposeAll(RenderTargetViews);
-            RenderTargetViews = null;
 
             VS?.Dispose();
             VS = null;
 
             DisposeAll(VSConstantBuffers);
-            VSConstantBuffers = null;
 
             GS?.Dispose();
             GS = null;
@@ -477,10 +641,11 @@ public static class ImGuiDX11Impl
             PS = null;
 
             DisposeAll(PSSamplers);
-            PSSamplers = null;
 
             DisposeAll(PSResourceViews);
-            PSResourceViews = null;
+
+            ScissorRectsCount = 0;
+            ViewportsCount = 0;
         }
 
         private static void DisposeAll<T>(T[] a) where T : class, IDisposable
@@ -705,6 +870,9 @@ public static class ImGuiDX11Impl
 
         _vertexShader?.Dispose();
         _vertexShader = null;
+
+        _stateBackup.Dispose();
+        _userCallbackCache.Clear();
     }
 
     public static unsafe void Shutdown()

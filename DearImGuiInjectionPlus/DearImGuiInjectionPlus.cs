@@ -113,9 +113,49 @@ public static class DearImGuiInjectionPlus
             UnregisterTab(this);
         }
     }
+    private struct TabCategory
+    {
+        public string Name;
+        public RegisteredTab[] Tabs;
+    }
     private static readonly List<RegisteredTab> _registeredTabs = new();
     private static RegisteredTab[] _tabsSnapshot = Array.Empty<RegisteredTab>();
+    private static TabCategory[] _tabCategoriesSnapshot = Array.Empty<TabCategory>();
     private static readonly object _tabLock = new();
+
+    private static void RebuildTabCategories_NoLock()
+    {
+        _tabsSnapshot = _registeredTabs.ToArray();
+        if (_registeredTabs.Count == 0)
+        {
+            _tabCategoriesSnapshot = Array.Empty<TabCategory>();
+            return;
+        }
+
+        var categories = new Dictionary<string, List<RegisteredTab>>(StringComparer.Ordinal);
+        for (int i = 0; i < _registeredTabs.Count; i++)
+        {
+            var tab = _registeredTabs[i];
+            if (!categories.TryGetValue(tab.Category, out var list))
+            {
+                list = new List<RegisteredTab>();
+                categories[tab.Category] = list;
+            }
+            list.Add(tab);
+        }
+
+        var result = new TabCategory[categories.Count];
+        int idx = 0;
+        foreach (var kvp in categories)
+        {
+            result[idx++] = new TabCategory
+            {
+                Name = kvp.Key,
+                Tabs = kvp.Value.ToArray()
+            };
+        }
+        _tabCategoriesSnapshot = result;
+    }
 
     /// <summary>
     /// Registers a modular ImGui window.
@@ -177,7 +217,7 @@ public static class DearImGuiInjectionPlus
             _registeredTabs.RemoveAll(t => string.Equals(t.Category, cat, StringComparison.Ordinal) &&
                                            string.Equals(t.Title, tit, StringComparison.Ordinal));
             _registeredTabs.Add(tab);
-            _tabsSnapshot = _registeredTabs.ToArray();
+            RebuildTabCategories_NoLock();
         }
 
         return tab;
@@ -197,7 +237,7 @@ public static class DearImGuiInjectionPlus
                                                          string.Equals(t.Title, tit, StringComparison.Ordinal));
             if (removed > 0)
             {
-                _tabsSnapshot = _registeredTabs.ToArray();
+                RebuildTabCategories_NoLock();
                 return true;
             }
 
@@ -217,7 +257,7 @@ public static class DearImGuiInjectionPlus
         {
             if (_registeredTabs.Remove(tab))
             {
-                _tabsSnapshot = _registeredTabs.ToArray();
+                RebuildTabCategories_NoLock();
                 return true;
             }
 
@@ -360,7 +400,7 @@ public static class DearImGuiInjectionPlus
         lock (_tabLock)
         {
             _registeredTabs.Clear();
-            _tabsSnapshot = Array.Empty<RegisteredTab>();
+            RebuildTabCategories_NoLock();
         }
 
         if (Context != IntPtr.Zero)
@@ -480,30 +520,20 @@ public static class DearImGuiInjectionPlus
         ImGui.NewFrame();
 
         // 1. Render Registered Menu Bar Tabs
-        var tabs = _tabsSnapshot;
-        if (tabs.Length > 0 && IsCursorVisible)
+        var categories = _tabCategoriesSnapshot;
+        if (categories.Length > 0 && IsCursorVisible)
         {
             if (ImGui.BeginMainMenuBar())
             {
-                var categories = new Dictionary<string, List<RegisteredTab>>();
-                for (int i = 0; i < tabs.Length; i++)
+                for (int c = 0; c < categories.Length; c++)
                 {
-                    var tab = tabs[i];
-                    if (!categories.TryGetValue(tab.Category, out var list))
+                    ref readonly var category = ref categories[c];
+                    if (ImGui.BeginMenu(category.Name))
                     {
-                        list = new List<RegisteredTab>();
-                        categories[tab.Category] = list;
-                    }
-                    list.Add(tab);
-                }
-
-                foreach (var kvp in categories)
-                {
-                    if (ImGui.BeginMenu(kvp.Key))
-                    {
-                        for (int i = 0; i < kvp.Value.Count; i++)
+                        var catTabs = category.Tabs;
+                        for (int i = 0; i < catTabs.Length; i++)
                         {
-                            var tab = kvp.Value[i];
+                            var tab = catTabs[i];
                             try
                             {
                                 tab.Callback?.Invoke();
