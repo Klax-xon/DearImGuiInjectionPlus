@@ -35,6 +35,7 @@ internal static class ImGuiDX12
     private static long _fenceValue;
     private static System.Threading.AutoResetEvent _fenceEvent;
     private static int _renderFrameCount = 0;
+    private static readonly object _initLock = new();
 
     internal static void Init(IntPtr swapChainPtr = default)
     {
@@ -185,9 +186,15 @@ internal static class ImGuiDX12
 
         if (commandQueue != null && commandQueue.Description.Type == CommandListType.Direct)
         {
-            Log.Info($"[ImGuiDX12] Successfully captured Direct CommandQueue: {commandQueue.NativePointer:X8}");
-            System.Runtime.InteropServices.Marshal.AddRef(commandQueue.NativePointer);
-            _commandQueue = new CommandQueue(commandQueue.NativePointer);
+            lock (_initLock)
+            {
+                if (_commandQueue == null)
+                {
+                    Log.Info($"[ImGuiDX12] Successfully captured Direct CommandQueue: {commandQueue.NativePointer:X8}");
+                    System.Runtime.InteropServices.Marshal.AddRef(commandQueue.NativePointer);
+                    _commandQueue = new CommandQueue(commandQueue.NativePointer);
+                }
+            }
 
             // Trigger initialization immediately if swapchain is already known!
             TryInitImGuiDX12();
@@ -246,16 +253,22 @@ internal static class ImGuiDX12
         // If command queue is not yet known, check swapchain directly or CapturedCommandQueue
         if (_commandQueue == null)
         {
-            var queuePtr = RendererFinder.RendererFinder.QueryCommandQueueFromSwapChain(swapChain.NativePointer);
-            if (queuePtr == IntPtr.Zero)
+            lock (_initLock)
             {
-                queuePtr = RendererFinder.Renderers.DX12Renderer.CapturedCommandQueue;
-            }
-            if (queuePtr != IntPtr.Zero)
-            {
-                _commandQueue = new CommandQueue(queuePtr);
-                RendererFinder.Renderers.DX12Renderer.CapturedCommandQueue = queuePtr;
-                Log.Info($"[ImGuiDX12] Acquired CommandQueue on present: {queuePtr:X8}");
+                if (_commandQueue == null)
+                {
+                    var queuePtr = RendererFinder.RendererFinder.QueryCommandQueueFromSwapChain(swapChain.NativePointer);
+                    if (queuePtr == IntPtr.Zero)
+                    {
+                        queuePtr = RendererFinder.Renderers.DX12Renderer.CapturedCommandQueue;
+                    }
+                    if (queuePtr != IntPtr.Zero)
+                    {
+                        _commandQueue = new CommandQueue(queuePtr);
+                        RendererFinder.Renderers.DX12Renderer.CapturedCommandQueue = queuePtr;
+                        Log.Info($"[ImGuiDX12] Acquired CommandQueue on present: {queuePtr:X8}");
+                    }
+                }
             }
         }
 
@@ -266,17 +279,23 @@ internal static class ImGuiDX12
         }
         else if (_device == null && _commandQueue != null)
         {
-            try
+            lock (_initLock)
             {
-                _currentSwapChain = swapChain;
-                _currentSwapChainPtr = swapChain.NativePointer;
-                InitImGuiDX12Internal(swapChain);
-                Log.Info($"[ImGuiDX12] Reinitialized DX12 backend on device {_device.NativePointer:X8}");
-            }
-            catch (Exception ex)
-            {
-                Log.Warning($"[ImGuiDX12] Failed to reinitialize DX12 backend on new device: {ex.Message}");
-                return;
+                if (_device == null && _commandQueue != null)
+                {
+                    try
+                    {
+                        _currentSwapChain = swapChain;
+                        _currentSwapChainPtr = swapChain.NativePointer;
+                        InitImGuiDX12Internal(swapChain);
+                        Log.Info($"[ImGuiDX12] Reinitialized DX12 backend on device {_device.NativePointer:X8}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning($"[ImGuiDX12] Failed to reinitialize DX12 backend on new device: {ex.Message}");
+                        return;
+                    }
+                }
             }
         }
 
@@ -291,37 +310,40 @@ internal static class ImGuiDX12
         if (DearImGuiInjectionPlus.Initialized)
             return;
 
-        if (_currentSwapChain == null || _commandQueue == null)
-            return;
-
-        var windowHandle = _currentSwapChain.Description.OutputHandle;
-        _windowHandle = windowHandle;
-        _currentSwapChainPtr = _currentSwapChain.NativePointer;
-        Log.Info($"[ImGuiDX12] Starting DX12 initialization with window {windowHandle:X8} and CommandQueue {_commandQueue.NativePointer:X8}");
-
-        // Step 1 & 2: Create ImGui Context and configure IO
-        DearImGuiInjectionPlus.InitImGui();
-        Log.Info("[ImGuiDX12] Step 1 & 2 complete: Context and IO initialized.");
-
-        // Step 3: Initialize Graphics backend (ImGuiDX12Impl)
-        InitImGuiDX12Internal(_currentSwapChain);
-        Log.Info("[ImGuiDX12] Step 3 complete: DX12 Graphics backend initialized.");
-
-        // Step 4: Initialize Win32 backend via InputManager.Subclass (calls ImGuiWin32Impl.Init)
-        if (windowHandle != IntPtr.Zero)
+        lock (_initLock)
         {
-            InputManager.Subclass(windowHandle);
-            DearImGuiInjectionPlus.UpdateCursorVisibility();
-            Log.Info($"[ImGuiDX12] Step 4 complete: Win32 backend subclassed on window {windowHandle:X8}.");
-        }
-        else
-        {
-            Log.Warning("[ImGuiDX12] Step 4 warning: windowHandle was zero, skipping Subclass.");
-        }
+            if (DearImGuiInjectionPlus.Initialized || _currentSwapChain == null || _commandQueue == null)
+                return;
 
-        // Step 5: Mark backend as initialized
-        DearImGuiInjectionPlus.Initialized = true;
-        Log.Info("[ImGuiDX12] Step 5 complete: ImGui DX12 bootstrap finished successfully.");
+            var windowHandle = _currentSwapChain.Description.OutputHandle;
+            _windowHandle = windowHandle;
+            _currentSwapChainPtr = _currentSwapChain.NativePointer;
+            Log.Info($"[ImGuiDX12] Starting DX12 initialization with window {windowHandle:X8} and CommandQueue {_commandQueue.NativePointer:X8}");
+
+            // Step 1 & 2: Create ImGui Context and configure IO
+            DearImGuiInjectionPlus.InitImGui();
+            Log.Info("[ImGuiDX12] Step 1 & 2 complete: Context and IO initialized.");
+
+            // Step 3: Initialize Graphics backend (ImGuiDX12Impl)
+            InitImGuiDX12Internal(_currentSwapChain);
+            Log.Info("[ImGuiDX12] Step 3 complete: DX12 Graphics backend initialized.");
+
+            // Step 4: Initialize Win32 backend via InputManager.Subclass (calls ImGuiWin32Impl.Init)
+            if (windowHandle != IntPtr.Zero)
+            {
+                InputManager.Subclass(windowHandle);
+                DearImGuiInjectionPlus.UpdateCursorVisibility();
+                Log.Info($"[ImGuiDX12] Step 4 complete: Win32 backend subclassed on window {windowHandle:X8}.");
+            }
+            else
+            {
+                Log.Warning("[ImGuiDX12] Step 4 warning: windowHandle was zero, skipping Subclass.");
+            }
+
+            // Step 5: Mark backend as initialized
+            DearImGuiInjectionPlus.Initialized = true;
+            Log.Info("[ImGuiDX12] Step 5 complete: ImGui DX12 bootstrap finished successfully.");
+        }
     }
 
     private static unsafe void InitImGuiDX12Internal(SwapChain swapChain)
@@ -478,7 +500,20 @@ internal static class ImGuiDX12
                 if (_fence.CompletedValue < currentFrameContext.FenceValue)
                 {
                     _fence.SetEventOnCompletion(currentFrameContext.FenceValue, _fenceEvent.SafeWaitHandle.DangerousGetHandle());
-                    _fenceEvent.WaitOne();
+                    if (!_fenceEvent.WaitOne(2000))
+                    {
+                        Log.Error($"[ImGuiDX12] GPU timeout/hang waiting for fence completion (Fence: {currentFrameContext.FenceValue}, Completed: {_fence.CompletedValue}) on frame {frame}. Skipping frame rendering.");
+                        try
+                        {
+                            if (_device != null && (_device.IsDisposed || _device.DeviceRemovedReason.Failure))
+                            {
+                                Log.Warning("[ImGuiDX12] Device loss detected following fence wait timeout. Invalidating device objects.");
+                                InvalidateDevice();
+                            }
+                        }
+                        catch { }
+                        return;
+                    }
                 }
             }
 

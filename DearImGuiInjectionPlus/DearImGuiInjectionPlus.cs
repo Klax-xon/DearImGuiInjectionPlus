@@ -12,10 +12,16 @@ namespace DearImGuiInjectionPlus;
 
 public static class DearImGuiInjectionPlus
 {
+    private static volatile bool _initialized;
+
     /// <summary>
     /// True if the injection and renderer backend have been initialized, else false.
     /// </summary>
-    public static bool Initialized { get; internal set; }
+    public static bool Initialized
+    {
+        get => _initialized;
+        internal set => _initialized = value;
+    }
 
     public static IntPtr Context { get; internal set; }
 
@@ -241,7 +247,7 @@ public static class DearImGuiInjectionPlus
 
         IO.ConfigFlags |= ImGuiConfigFlags.DockingEnable;
 
-        if (IO.NativePtr != null && !string.IsNullOrEmpty(ImGuiIniConfigPath))
+        if (IO.NativePtr != null && !string.IsNullOrEmpty(ImGuiIniConfigPath) && IO.NativePtr->IniFilename == null)
         {
             IO.NativePtr->IniFilename = (byte*)Marshal.StringToHGlobalAnsi(ImGuiIniConfigPath);
         }
