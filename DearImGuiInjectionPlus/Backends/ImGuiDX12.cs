@@ -79,6 +79,10 @@ internal static class ImGuiDX12
             {
                 queuePtr = RendererFinder.RendererFinder.QueryCommandQueueFromSwapChain(swapChainPtr);
             }
+            if (queuePtr == IntPtr.Zero)
+            {
+                queuePtr = RendererFinder.Renderers.DX12Renderer.GetOrBindQueueForPresent(swapChainPtr);
+            }
             if (queuePtr != IntPtr.Zero && _commandQueue == null)
             {
                 _commandQueue = new CommandQueue(queuePtr);
@@ -139,6 +143,8 @@ internal static class ImGuiDX12
 
         try { _commandQueue?.Dispose(); } catch { }
         _commandQueue = null;
+        RendererFinder.Renderers.DX12Renderer.CapturedCommandQueue = IntPtr.Zero;
+        RendererFinder.Renderers.DX12Renderer.CaptureQueue = true;
 
         if (_frameContexts != null)
         {
@@ -201,7 +207,11 @@ internal static class ImGuiDX12
                 if (_commandQueue == null)
                 {
                     Log.Info($"[ImGuiDX12] Successfully captured Direct CommandQueue: {commandQueue.NativePointer:X8}");
-                    System.Runtime.InteropServices.Marshal.AddRef(commandQueue.NativePointer);
+                    if (RendererFinder.Renderers.DX12Renderer.CapturedCommandQueue != commandQueue.NativePointer)
+                    {
+                        System.Runtime.InteropServices.Marshal.AddRef(commandQueue.NativePointer);
+                        RendererFinder.Renderers.DX12Renderer.CapturedCommandQueue = commandQueue.NativePointer;
+                    }
                     _commandQueue = new CommandQueue(commandQueue.NativePointer);
                     GC.SuppressFinalize(_commandQueue);
                 }
@@ -268,10 +278,14 @@ internal static class ImGuiDX12
             {
                 if (_commandQueue == null)
                 {
-                    var queuePtr = RendererFinder.RendererFinder.QueryCommandQueueFromSwapChain(swapChain.NativePointer);
+                    var queuePtr = RendererFinder.Renderers.DX12Renderer.CapturedCommandQueue;
                     if (queuePtr == IntPtr.Zero)
                     {
-                        queuePtr = RendererFinder.Renderers.DX12Renderer.CapturedCommandQueue;
+                        queuePtr = RendererFinder.RendererFinder.QueryCommandQueueFromSwapChain(swapChain.NativePointer);
+                    }
+                    if (queuePtr == IntPtr.Zero)
+                    {
+                        queuePtr = RendererFinder.Renderers.DX12Renderer.GetOrBindQueueForPresent(swapChain.NativePointer);
                     }
                     if (queuePtr != IntPtr.Zero)
                     {

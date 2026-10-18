@@ -243,6 +243,7 @@ public class DX12Renderer : IRenderer
         // 1. Thread-local candidate direct queue executed on this Present thread
         if (_lastDirectQueueOnCurrentThread != IntPtr.Zero)
         {
+            Marshal.AddRef(_lastDirectQueueOnCurrentThread);
             CapturedCommandQueue = _lastDirectQueueOnCurrentThread;
             Log.Info($"[DX12Renderer] Bound Direct ID3D12CommandQueue from Present thread ({currentThreadId}): {CapturedCommandQueue:X8}");
             return CapturedCommandQueue;
@@ -251,6 +252,7 @@ public class DX12Renderer : IRenderer
         // 2. Global candidate direct queue matching this Present thread
         if (_candidateCommandQueue != IntPtr.Zero && _candidateThreadId == currentThreadId)
         {
+            Marshal.AddRef(_candidateCommandQueue);
             CapturedCommandQueue = _candidateCommandQueue;
             Log.Info($"[DX12Renderer] Bound candidate Direct ID3D12CommandQueue matching Present thread affinity ({currentThreadId}): {CapturedCommandQueue:X8}");
             return CapturedCommandQueue;
