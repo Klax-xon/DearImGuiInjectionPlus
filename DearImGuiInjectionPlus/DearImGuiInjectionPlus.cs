@@ -597,6 +597,13 @@ public static class DearImGuiInjectionPlus
         ImGui.EndFrame();
         ImGui.Render();
 
+        var drawData = ImGui.GetDrawData();
+        if (drawData.NativePtr != null)
+        {
+            GraphicsTelemetry.TotalVertices = drawData.TotalVtxCount;
+            GraphicsTelemetry.TotalIndices = drawData.TotalIdxCount;
+        }
+
         _wantCaptureMouse = IO.NativePtr != null && IO.WantCaptureMouse;
         _wantCaptureKeyboard = IO.NativePtr != null && IO.WantCaptureKeyboard;
     }

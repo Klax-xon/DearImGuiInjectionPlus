@@ -84,8 +84,15 @@ public class ConcurrencyTestPanel : IImGuiWindow
         ImGui.End();
     }
 
-    private void ConsumePipelineOnRenderThread()
+    private int _lastConsumedFrame = -1;
+
+    public void ConsumePipelineOnRenderThread()
     {
+        int currentFrame = ImGui.GetFrameCount();
+        if (_lastConsumedFrame == currentFrame)
+            return;
+        _lastConsumedFrame = currentFrame;
+
         var latest = _pipeline.GetLatest();
         if (latest.SequenceNumber > 0)
         {
@@ -123,6 +130,9 @@ public class ConcurrencyTestPanel : IImGuiWindow
 
     public void DrawPanelContent()
     {
+        // Ensure pipeline is consumed even when viewed directly inside the Master Dashboard tab
+        ConsumePipelineOnRenderThread();
+
         ImGui.TextColored(new Vector4(0.2f, 0.8f, 1f, 1f), "Category 2: Concurrency & Lock-Free Pipelines");
         ImGui.TextDisabled("Validates TM-04 (High-Frequency Concurrency), TH-05 (Dispatcher Lifetimes), and TH-06 (Zero Torn Reads).");
         ImGui.Separator();
@@ -164,6 +174,24 @@ public class ConcurrencyTestPanel : IImGuiWindow
                 _totalWrites = 0;
                 _successfulReads = 0;
                 _tornReads = 0;
+                _lastRateWrites = 0;
+                _lastRateReads = 0;
+                _lastRateCalcTimestamp = Stopwatch.GetTimestamp();
+                _currentWriteRateHz = 0f;
+                _currentReadRateHz = 0f;
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("Stop & Reset"))
+            {
+                StopWorker();
+                _totalWrites = 0;
+                _successfulReads = 0;
+                _tornReads = 0;
+                _lastRateWrites = 0;
+                _lastRateReads = 0;
+                _currentWriteRateHz = 0f;
+                _currentReadRateHz = 0f;
+                _lastReadPayload = default;
             }
 
             ImGui.SliderInt("Target Writer Rate (Hz)", ref _targetUpdateRateHz, 100, 10000);
@@ -270,8 +298,12 @@ public class ConcurrencyTestPanel : IImGuiWindow
                 });
             }
 
-            ImGui.SameLine();
-            ImGui.TextColored(new Vector4(0.4f, 0.9f, 1f, 1f), _invokeResult);
+            if (!string.IsNullOrEmpty(_invokeResult))
+            {
+                ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.4f, 0.9f, 1f, 1f));
+                ImGui.TextWrapped(_invokeResult);
+                ImGui.PopStyleColor();
+            }
 
             // 4. Deliberate Timeout Test
             ImGui.Text("Deliberate Dispatcher Timeout Test (Verifies DispatchCompletionHandle safe disposal):");
@@ -309,8 +341,14 @@ public class ConcurrencyTestPanel : IImGuiWindow
                 });
             }
 
-            ImGui.SameLine();
-            ImGui.TextColored(new Vector4(0.3f, 1f, 0.4f, 1f), _timeoutResult);
+            if (!string.IsNullOrEmpty(_timeoutResult))
+            {
+                ImGui.PushStyleColor(ImGuiCol.Text, _timeoutResult.StartsWith("PASS") 
+                    ? new Vector4(0.3f, 1f, 0.4f, 1f) 
+                    : new Vector4(1f, 0.8f, 0.2f, 1f));
+                ImGui.TextWrapped(_timeoutResult);
+                ImGui.PopStyleColor();
+            }
         }
     }
 

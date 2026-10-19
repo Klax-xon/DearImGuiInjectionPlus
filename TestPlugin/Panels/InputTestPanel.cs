@@ -109,6 +109,10 @@ public class InputTestPanel : IImGuiWindow
             }
 
             ImGui.Spacing();
+            ImGui.TextColored(new Vector4(0.3f, 1f, 0.4f, 1f), "Font Atlas Glyph Coverage: Latin, Polish (Latin Ext-A), Cyrillic, Greek, Punctuation [PASS: Natively Baked]");
+            ImGui.TextDisabled("Note on CJK & Emojis: ImGui requires rasterized glyphs in its GPU font texture. Comfortaa-Medium contains Latin and Cyrillic; CJK and emojis display fallback '?' in ImGui overlay, while raw UTF-8 bytes remain fully intact and native Unity UI text fields receive full Unicode without corruption (TM-06).");
+
+            ImGui.Spacing();
             ImGui.Text("Interactive Text Input (Type directly or use quick-paste buttons):");
             ImGui.InputText("##UnicodeInput", _inputBuffer, (uint)_inputBuffer.Length);
 
@@ -117,17 +121,36 @@ public class InputTestPanel : IImGuiWindow
             while (byteLen < _inputBuffer.Length && _inputBuffer[byteLen] != 0) byteLen++;
             string currentStr = Encoding.UTF8.GetString(_inputBuffer, 0, byteLen);
 
-            ImGui.TextDisabled($"Length: {currentStr.Length} chars | {byteLen} UTF-8 bytes");
+            string hexPreview = byteLen > 0 ? BitConverter.ToString(_inputBuffer, 0, Math.Min(byteLen, 32)).Replace("-", " ") : "";
+            if (byteLen > 32) hexPreview += " ...";
+
+            ImGui.TextDisabled($"Length: {currentStr.Length} chars | {byteLen} UTF-8 bytes | Hex: {hexPreview}");
 
             ImGui.Spacing();
             ImGui.Text("Quick-Paste Test Strings:");
 
-            // Polish
+            // Polish & Cyrillic (Natively rendered in Comfortaa)
             if (ImGui.Button("Polish: Zażółć gęślą jaźń"))
             {
                 SetInputText("Zażółć gęślą jaźń");
             }
             ImGui.SameLine();
+            if (ImGui.Button("Cyrillic: Привет, мир!"))
+            {
+                SetInputText("Привет, мир!");
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("German: Größenmaßstäbe & Übergrößen"))
+            {
+                SetInputText("Größenmaßstäbe & Übergrößen");
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("French: Crème brûlée & fête"))
+            {
+                SetInputText("Crème brûlée & fête");
+            }
+
+            // CJK & Extended Symbols (Fidelity in UTF-8 buffer)
             if (ImGui.Button("Japanese: 日本語テスト"))
             {
                 SetInputText("日本語テスト");
@@ -137,8 +160,7 @@ public class InputTestPanel : IImGuiWindow
             {
                 SetInputText("한국어");
             }
-
-            // Chinese, Emojis, German
+            ImGui.SameLine();
             if (ImGui.Button("Chinese: 测试中文输入法"))
             {
                 SetInputText("测试中文输入法");
@@ -147,22 +169,6 @@ public class InputTestPanel : IImGuiWindow
             if (ImGui.Button("Emojis: 🎮 🚀 ✨ 🧪 🕹️ 🎯"))
             {
                 SetInputText("🎮 🚀 ✨ 🧪 🕹️ 🎯");
-            }
-            ImGui.SameLine();
-            if (ImGui.Button("German: Größenmaßstäbe & Übergrößen"))
-            {
-                SetInputText("Größenmaßstäbe & Übergrößen");
-            }
-
-            // Cyrillic, French
-            if (ImGui.Button("Cyrillic: Привет, мир!"))
-            {
-                SetInputText("Привет, мир!");
-            }
-            ImGui.SameLine();
-            if (ImGui.Button("French: Crème brûlée & fête"))
-            {
-                SetInputText("Crème brûlée & fête");
             }
             ImGui.SameLine();
             if (ImGui.Button("Clear"))

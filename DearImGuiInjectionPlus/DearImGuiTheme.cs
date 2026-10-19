@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using ImGuiNET;
 
 namespace DearImGuiInjectionPlus;
@@ -124,6 +125,22 @@ public static class DearImGuiTheme
         Log.Info($"[DearImGuiTheme] Applied HDR gamma correction (isHdr: {isHdr}).");
     }
 
+    // Extended glyph ranges covering Basic Latin, Latin-1 Supplement, Latin Extended-A & B (Polish),
+    // Greek, Cyrillic, General Punctuation (em-dash —, etc.), and Currency/Symbols.
+    private static readonly ushort[] ExtendedGlyphRanges = new ushort[]
+    {
+        0x0020, 0x00FF, // Basic Latin + Latin Supplement
+        0x0100, 0x024F, // Latin Extended-A & B (Polish: ą, ć, ę, ł, ń, ó, ś, ź, ż; Czech, Slovak, etc.)
+        0x0370, 0x03FF, // Greek and Coptic
+        0x0400, 0x052F, // Cyrillic + Cyrillic Supplement (Russian, Ukrainian, etc.: Привет, мир!)
+        0x2000, 0x206F, // General Punctuation (em-dash —, en-dash –, bullets, quotes, ellipses)
+        0x20A0, 0x20CF, // Currency Symbols (€, £, etc.)
+        0x2100, 0x214F, // Letterlike Symbols (№, ™, etc.)
+        0
+    };
+    private static GCHandle _glyphRangesHandle;
+    private static IntPtr _glyphRangesPtr;
+
     private static unsafe void SetupCustomFont()
     {
         try
@@ -146,11 +163,17 @@ public static class DearImGuiTheme
                 return;
             }
 
-            var font = fonts.AddFontFromFileTTF(fontPath, 15);
+            if (_glyphRangesPtr == IntPtr.Zero)
+            {
+                _glyphRangesHandle = GCHandle.Alloc(ExtendedGlyphRanges, GCHandleType.Pinned);
+                _glyphRangesPtr = _glyphRangesHandle.AddrOfPinnedObject();
+            }
+
+            var font = fonts.AddFontFromFileTTF(fontPath, 15, default, _glyphRangesPtr);
             if (font.NativePtr != null)
             {
                 ImGui.GetIO().NativePtr->FontDefault = font;
-                Log.Info("[DearImGuiInjectionPlus] Loaded custom Comfortaa font successfully.");
+                Log.Info("[DearImGuiInjectionPlus] Loaded custom Comfortaa font with extended multilingual glyph ranges (Polish, Cyrillic, Greek, Punctuation) successfully.");
             }
         }
         catch (Exception ex)

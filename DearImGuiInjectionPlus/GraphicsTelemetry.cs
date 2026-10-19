@@ -121,6 +121,16 @@ public static class GraphicsTelemetry
         internal set => _colorSpaceName = value;
     }
 
+    /// <summary>
+    /// Total rendered vertices across all ImGui draw lists from the most recent frame.
+    /// </summary>
+    public static int TotalVertices { get; internal set; }
+
+    /// <summary>
+    /// Total rendered indices across all ImGui draw lists from the most recent frame.
+    /// </summary>
+    public static int TotalIndices { get; internal set; }
+
     internal static void Update(
         string backendName,
         IntPtr windowHandle,

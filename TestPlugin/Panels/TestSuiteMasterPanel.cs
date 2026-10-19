@@ -12,7 +12,7 @@ namespace TestPlugin.Panels;
 public class TestSuiteMasterPanel : IImGuiWindow
 {
     public string Id => "dearimgui_test_master";
-    public string Title => "DearImGui Test Suite — Master Dashboard";
+    public string Title => "DearImGui Test Suite - Master Dashboard";
     public bool IsOpen { get; set; } = true;
 
     private readonly GraphicsTestPanel _graphicsPanel;

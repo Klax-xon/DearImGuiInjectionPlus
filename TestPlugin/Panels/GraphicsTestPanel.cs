@@ -27,6 +27,8 @@ public class GraphicsTestPanel : IImGuiWindow
     private bool _autoBurst = false;
     private double _lastBurstTime = 0;
     private bool _burstHighState = false;
+    private int _lastStressVtxCount = 0;
+    private int _lastStressIdxCount = 0;
 
     // UserCallback Reset State (RR-03)
     private bool _triggerCallbackReset = false;
@@ -178,16 +180,20 @@ public class GraphicsTestPanel : IImGuiWindow
             ImGui.SameLine();
             ImGui.Checkbox("Text", ref _drawText);
 
-            var drawData = ImGui.GetDrawData();
-            int totalVtx = drawData.NativePtr != null ? drawData.TotalVtxCount : 0;
-            int totalIdx = drawData.NativePtr != null ? drawData.TotalIdxCount : 0;
+            var io = ImGui.GetIO();
+            var drawList = ImGui.GetWindowDrawList();
+            int totalVtx = GraphicsTelemetry.TotalVertices > 0 ? GraphicsTelemetry.TotalVertices : io.MetricsRenderVertices;
+            int totalIdx = GraphicsTelemetry.TotalIndices > 0 ? GraphicsTelemetry.TotalIndices : io.MetricsRenderIndices;
 
-            ImGui.Text($"Frame Total Vertices: {totalVtx:N0} | Total Indices: {totalIdx:N0}");
+            ImGui.Text($"Frame Total: {totalVtx:N0} vertices | {totalIdx:N0} indices");
+            ImGui.SameLine();
+            ImGui.TextDisabled($"| Stress Primitives: {_lastStressVtxCount:N0} vtx / {_lastStressIdxCount:N0} idx");
+            ImGui.SameLine();
+            ImGui.TextDisabled($"| Window DrawList: {drawList.VtxBuffer.Size:N0} vtx");
 
             // Stress rendering canvas
             Vector2 canvasSize = new(ImGui.GetContentRegionAvail().X, 140f);
             Vector2 canvasPos = ImGui.GetCursorScreenPos();
-            var drawList = ImGui.GetWindowDrawList();
 
             // Background canvas rect
             drawList.AddRectFilled(canvasPos, canvasPos + canvasSize, ImGui.GetColorU32(new Vector4(0.08f, 0.08f, 0.1f, 1f)), 4f);
@@ -237,6 +243,14 @@ public class GraphicsTestPanel : IImGuiWindow
                         textDrawn++;
                     }
                 }
+
+                _lastStressVtxCount = (rectsDrawn * 4) + (circlesDrawn * 9) + (linesDrawn * 2) + (textDrawn * 4);
+                _lastStressIdxCount = (rectsDrawn * 6) + (circlesDrawn * 24) + (linesDrawn * 2) + (textDrawn * 6);
+            }
+            else
+            {
+                _lastStressVtxCount = 0;
+                _lastStressIdxCount = 0;
             }
 
             ImGui.Dummy(canvasSize);

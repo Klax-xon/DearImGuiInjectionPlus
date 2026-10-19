@@ -215,6 +215,9 @@ public class TestPlugin : BaseUnityPlugin
 
     private void RenderLegacyOverlay()
     {
+        // Unconditionally consume struct snapshot pipeline on the render thread every frame (TM-04)
+        _concurrencyPanel?.ConsumePipelineOnRenderThread();
+
         if (DearImGuiInjectionPlus.DearImGuiInjectionPlus.IsCursorVisible)
         {
             ImGui.ShowDemoWindow();
