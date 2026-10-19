@@ -38,16 +38,17 @@ public class ConcurrencyTestPanel : IImGuiWindow
     private Thread _workerThread;
     private volatile bool _workerRunning = false;
     private int _targetUpdateRateHz = 5000;
-    private ulong _totalWrites = 0;
-    private ulong _successfulReads = 0;
-    private ulong _tornReads = 0;
+    private long _workerSequence = 0;
+    private long _totalWrites = 0;
+    private long _successfulReads = 0;
+    private long _tornReads = 0;
     private ConcurrencyTestPayload _lastReadPayload;
     private ConcurrencyTestPayload _lastTornPayload;
 
     // Rates calculation
     private long _lastRateCalcTimestamp = 0;
-    private ulong _lastRateWrites = 0;
-    private ulong _lastRateReads = 0;
+    private long _lastRateWrites = 0;
+    private long _lastRateReads = 0;
     private float _currentWriteRateHz = 0f;
     private float _currentReadRateHz = 0f;
 
@@ -88,6 +89,13 @@ public class ConcurrencyTestPanel : IImGuiWindow
 
     public void ConsumePipelineOnRenderThread()
     {
+        if (!_workerRunning)
+        {
+            _currentWriteRateHz = 0f;
+            _currentReadRateHz = 0f;
+            return;
+        }
+
         int currentFrame = ImGui.GetFrameCount();
         if (_lastConsumedFrame == currentFrame)
             return;
@@ -171,27 +179,12 @@ public class ConcurrencyTestPanel : IImGuiWindow
             ImGui.SameLine();
             if (ImGui.Button("Reset Counters"))
             {
-                _totalWrites = 0;
-                _successfulReads = 0;
-                _tornReads = 0;
-                _lastRateWrites = 0;
-                _lastRateReads = 0;
-                _lastRateCalcTimestamp = Stopwatch.GetTimestamp();
-                _currentWriteRateHz = 0f;
-                _currentReadRateHz = 0f;
+                ResetCounters();
             }
             ImGui.SameLine();
             if (ImGui.Button("Stop & Reset"))
             {
-                StopWorker();
-                _totalWrites = 0;
-                _successfulReads = 0;
-                _tornReads = 0;
-                _lastRateWrites = 0;
-                _lastRateReads = 0;
-                _currentWriteRateHz = 0f;
-                _currentReadRateHz = 0f;
-                _lastReadPayload = default;
+                StopAndReset();
             }
 
             ImGui.SliderInt("Target Writer Rate (Hz)", ref _targetUpdateRateHz, 100, 10000);
@@ -352,10 +345,42 @@ public class ConcurrencyTestPanel : IImGuiWindow
         }
     }
 
+    public void ResetCounters()
+    {
+        Interlocked.Exchange(ref _totalWrites, 0);
+        Interlocked.Exchange(ref _workerSequence, 0);
+        _successfulReads = 0;
+        _tornReads = 0;
+        _lastRateWrites = 0;
+        _lastRateReads = 0;
+        _lastRateCalcTimestamp = Stopwatch.GetTimestamp();
+        _currentWriteRateHz = 0f;
+        _currentReadRateHz = 0f;
+        _lastReadPayload = default;
+        _lastTornPayload = default;
+
+        // Flush all three slots in the triple buffer to clear stale sequence numbers
+        _pipeline.Publish(default);
+        _pipeline.Publish(default);
+        _pipeline.Publish(default);
+    }
+
+    public void StopAndReset()
+    {
+        StopWorker();
+        ResetCounters();
+    }
+
     public void StartWorker()
     {
         if (_workerRunning)
             return;
+
+        _lastRateCalcTimestamp = Stopwatch.GetTimestamp();
+        _lastRateWrites = _totalWrites;
+        _lastRateReads = _successfulReads;
+        _currentWriteRateHz = 0f;
+        _currentReadRateHz = 0f;
 
         _workerRunning = true;
         _workerThread = new Thread(WorkerLoop)
@@ -375,34 +400,40 @@ public class ConcurrencyTestPanel : IImGuiWindow
             _workerThread.Join(500);
             _workerThread = null;
         }
+        _currentWriteRateHz = 0f;
+        _currentReadRateHz = 0f;
     }
 
     private void WorkerLoop()
     {
-        ulong sequence = 0;
         var sw = Stopwatch.StartNew();
         double ticksPerUpdate = (double)Stopwatch.Frequency / Math.Max(100, _targetUpdateRateHz);
         long nextTick = sw.ElapsedTicks;
 
         while (_workerRunning)
         {
-            sequence++;
+            ulong seq = (ulong)Interlocked.Increment(ref _workerSequence);
             var payload = new ConcurrencyTestPayload
             {
-                SequenceNumber = sequence,
-                FieldA = sequence,
-                FieldB = sequence,
-                FieldC = sequence,
-                FieldD = sequence,
+                SequenceNumber = seq,
+                FieldA = seq,
+                FieldB = seq,
+                FieldC = seq,
+                FieldD = seq,
                 TimestampTicks = Stopwatch.GetTimestamp()
             };
 
             _pipeline.Publish(payload);
-            _totalWrites++;
+            Interlocked.Increment(ref _totalWrites);
 
             // Precise pacing
             ticksPerUpdate = (double)Stopwatch.Frequency / Math.Max(100, _targetUpdateRateHz);
             nextTick += (long)ticksPerUpdate;
+            if (sw.ElapsedTicks - nextTick > (long)ticksPerUpdate * 10)
+            {
+                nextTick = sw.ElapsedTicks;
+            }
+
             while (sw.ElapsedTicks < nextTick && _workerRunning)
             {
                 if (nextTick - sw.ElapsedTicks > Stopwatch.Frequency / 1000)
