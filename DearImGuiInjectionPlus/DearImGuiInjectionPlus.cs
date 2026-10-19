@@ -68,6 +68,11 @@ public static class DearImGuiInjectionPlus
     /// </summary>
     public static bool BlockAllInputsWhenOpen { get; set; } = true;
 
+    /// <summary>
+    /// Current Win32 target window handle (HWND) subclassed by the injection framework.
+    /// </summary>
+    public static IntPtr WindowHandle => InputManager.WindowHandle;
+
     public static ImGuiStyle Style { get; private set; }
 
     /// <summary>

@@ -292,6 +292,28 @@ internal static class ImGuiDX11
                         var bbFormat = backBuffer.Description.Format;
                         DearImGuiTheme.ApplyGammaCorrection(IsHdrFormat(bbFormat));
 
+                        try
+                        {
+                            var desc = swapChain.Description;
+                            var mode = desc.ModeDescription;
+                            string colorSpace = IsHdrFormat(bbFormat)
+                                ? (bbFormat == Format.R16G16B16A16_Float ? "scRGB (R16G16B16A16_Float)" : "HDR10 (R10G10B10A2_UNorm)")
+                                : (bbFormat == Format.R8G8B8A8_UNorm_SRgb || bbFormat == Format.B8G8R8A8_UNorm_SRgb ? "sRGB" : "SDR Linear");
+
+                            GraphicsTelemetry.Update(
+                                "Direct3D 11",
+                                windowHandle,
+                                swapChain.NativePointer,
+                                bbFormat.ToString(),
+                                backBuffer.Description.Width,
+                                backBuffer.Description.Height,
+                                mode.RefreshRate.Numerator,
+                                mode.RefreshRate.Denominator,
+                                IsHdrFormat(bbFormat),
+                                colorSpace);
+                        }
+                        catch { }
+
                         if (bbFormat == Format.R8G8B8A8_UNorm_SRgb)
                         {
                             try

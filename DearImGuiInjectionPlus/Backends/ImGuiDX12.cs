@@ -634,6 +634,32 @@ internal static class ImGuiDX12
                     var backBufferFormat = backBufferResource.Description.Format;
                     DearImGuiTheme.ApplyGammaCorrection(IsHdrFormat(backBufferFormat));
 
+                    try
+                    {
+                        var desc = swapChain.Description;
+                        var mode = desc.ModeDescription;
+                        int w = (int)backBufferResource.Description.Width;
+                        int h = backBufferResource.Description.Height;
+                        if (w <= 0) w = mode.Width;
+                        if (h <= 0) h = mode.Height;
+                        string colorSpace = IsHdrFormat(backBufferFormat)
+                            ? (backBufferFormat == Format.R16G16B16A16_Float ? "scRGB (R16G16B16A16_Float)" : "HDR10 (R10G10B10A2_UNorm)")
+                            : (backBufferFormat == Format.R8G8B8A8_UNorm_SRgb || backBufferFormat == Format.B8G8R8A8_UNorm_SRgb ? "sRGB" : "SDR Linear");
+
+                        GraphicsTelemetry.Update(
+                            "Direct3D 12",
+                            windowHandle,
+                            swapChain.NativePointer,
+                            backBufferFormat.ToString(),
+                            w,
+                            h,
+                            mode.RefreshRate.Numerator,
+                            mode.RefreshRate.Denominator,
+                            IsHdrFormat(backBufferFormat),
+                            colorSpace);
+                    }
+                    catch { }
+
                     if (backBufferFormat != Format.Unknown && backBufferFormat != ImGuiDX12Impl.RTVFormat)
                     {
                         Log.Info($"[ImGuiDX12] Backbuffer format changed from {ImGuiDX12Impl.RTVFormat} to {backBufferFormat}. Recreating PSO.");

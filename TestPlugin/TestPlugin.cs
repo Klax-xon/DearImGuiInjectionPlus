@@ -1,8 +1,10 @@
 using System;
+using System.IO;
 using BepInEx;
 using DearImGuiInjectionPlus;
 using DearImGuiInjectionPlus.BepInEx;
 using ImGuiNET;
+using TestPlugin.Panels;
 using UnityEngine;
 
 namespace TestPlugin;
@@ -22,7 +24,7 @@ public class SampleModWindow : IImGuiWindow
     public bool IsOpen { get; set; } = true;
 
     private readonly StateSnapshotPipeline<PlayerDataSnapshot> _snapshotPipeline;
-    private byte[] _inputBuffer = new byte[64];
+    private readonly byte[] _inputBuffer = new byte[64];
 
     public SampleModWindow(StateSnapshotPipeline<PlayerDataSnapshot> snapshotPipeline)
     {
@@ -74,36 +76,128 @@ public class SampleModWindow : IImGuiWindow
 [BepInPlugin("com.custom.testplugin", "TestPlugin", "1.0.0")]
 public class TestPlugin : BaseUnityPlugin
 {
+    // Snapshot pipeline for sample mod window
     private StateSnapshotPipeline<PlayerDataSnapshot> _playerSnapshotPipeline;
-    private SampleModWindow _modWindow;
+    private SampleModWindow _sampleModWindow;
+
+    // Test Suite Panels (TM-01 through TM-10)
+    private GraphicsTestPanel _graphicsPanel;
+    private ConcurrencyTestPanel _concurrencyPanel;
+    private InputTestPanel _inputPanel;
+    private FaultRecoveryTestPanel _faultPanel;
+    private MemoryBenchmarkTestPanel _memoryPanel;
+    private TestSuiteMasterPanel _masterPanel;
+
+    // Registered Tab handles for clean teardown (LC-07)
+    private IDisposable _testSuiteTabHandle;
+    private IDisposable _sampleModTabHandle;
 
     private void Awake()
     {
         Log.Init(new BepInExLog(Logger));
-        Log.Info("[TestPlugin] Awake called successfully.");
+        Log.Info("[TestPlugin] Awake: Initializing DearImGui In-Game Test Suite...");
 
+        // 1. Initialize sample mod
         _playerSnapshotPipeline = new StateSnapshotPipeline<PlayerDataSnapshot>();
-        _modWindow = new SampleModWindow(_playerSnapshotPipeline);
+        _sampleModWindow = new SampleModWindow(_playerSnapshotPipeline);
+
+        // 2. Initialize modular test suite panels
+        _graphicsPanel = new GraphicsTestPanel();
+        _concurrencyPanel = new ConcurrencyTestPanel();
+        _inputPanel = new InputTestPanel();
+        _faultPanel = new FaultRecoveryTestPanel();
+        _memoryPanel = new MemoryBenchmarkTestPanel();
+        _masterPanel = new TestSuiteMasterPanel(
+            _graphicsPanel,
+            _concurrencyPanel,
+            _inputPanel,
+            _faultPanel,
+            _memoryPanel);
+
+        Log.Info("[TestPlugin] Test panels initialized successfully.");
     }
 
     private void OnEnable()
     {
+        Log.Info("[TestPlugin] OnEnable: Registering test suite windows and menu tabs...");
+
+        // 1. Register Legacy Overlay
         DearImGuiInjectionPlus.DearImGuiInjectionPlus.Render += RenderLegacyOverlay;
-        DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterWindow(_modWindow);
-        DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterTab("Mods", "Toggle Sample View", () =>
+
+        // 2. Register Sample Mod Window
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterWindow(_sampleModWindow);
+        _sampleModTabHandle = DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterTab("Mods", "Toggle Sample View", () =>
         {
-            if (ImGui.MenuItem("Toggle Sample Window", "", _modWindow.IsOpen))
+            if (ImGui.MenuItem("Toggle Sample Window", "", _sampleModWindow.IsOpen))
             {
-                _modWindow.IsOpen = !_modWindow.IsOpen;
+                _sampleModWindow.IsOpen = !_sampleModWindow.IsOpen;
             }
         });
+
+        // 3. Register Modular Test Windows (IImGuiWindow)
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterWindow(_masterPanel);
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterWindow(_graphicsPanel);
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterWindow(_concurrencyPanel);
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterWindow(_inputPanel);
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterWindow(_faultPanel);
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterWindow(_memoryPanel);
+
+        // 4. Register Unified "DearImGui Test Suite" Menu Bar Tab (LC-07, TM-07)
+        _testSuiteTabHandle = DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterTab("DearImGui Test Suite", "Test Suite Navigation", RenderTestSuiteMenu);
     }
 
     private void OnDisable()
     {
+        Log.Info("[TestPlugin] OnDisable: Unregistering all test suite windows and tabs...");
+
+        // 1. Unregister Legacy Overlay
         DearImGuiInjectionPlus.DearImGuiInjectionPlus.Render -= RenderLegacyOverlay;
-        DearImGuiInjectionPlus.DearImGuiInjectionPlus.UnregisterWindow(_modWindow);
-        DearImGuiInjectionPlus.DearImGuiInjectionPlus.UnregisterTab("Mods", "Toggle Sample View");
+
+        // 2. Unregister Sample Mod Window & Tab
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.UnregisterWindow(_sampleModWindow);
+        _sampleModTabHandle?.Dispose();
+        _sampleModTabHandle = null;
+
+        // 3. Unregister Test Windows
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.UnregisterWindow(_masterPanel);
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.UnregisterWindow(_graphicsPanel);
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.UnregisterWindow(_concurrencyPanel);
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.UnregisterWindow(_inputPanel);
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.UnregisterWindow(_faultPanel);
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.UnregisterWindow(_memoryPanel);
+
+        // 4. Unregister Test Suite Tab
+        _testSuiteTabHandle?.Dispose();
+        _testSuiteTabHandle = null;
+
+        // 5. Stop background concurrency worker
+        _concurrencyPanel?.StopWorker();
+    }
+
+    private void OnDestroy()
+    {
+        Log.Info("[TestPlugin] OnDestroy: Performing clean teardown and persisting timestamp...");
+
+        // Ensure clean teardown if OnDisable was skipped
+        OnDisable();
+
+        // TM-10 Quiescent Teardown: Persist timestamp to disk and log completion
+        try
+        {
+            string path = FaultRecoveryTestPanel.ShutdownTimestampPath;
+            string dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            File.WriteAllText(path, $"Teardown completed cleanly at {DateTime.UtcNow:o}");
+            Log.Info($"[TestPlugin] OnApplicationQuit / OnDestroy save completed (Timestamp: {path})");
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[TestPlugin] Error writing teardown timestamp: {ex.Message}");
+        }
     }
 
     private void Update()
@@ -125,5 +219,81 @@ public class TestPlugin : BaseUnityPlugin
         {
             ImGui.ShowDemoWindow();
         }
+    }
+
+    private void RenderTestSuiteMenu()
+    {
+        // Fault B Injection Hook (TM-07, LC-03)
+        if (FaultRecoveryTestPanel.TriggerFaultB)
+        {
+            FaultRecoveryTestPanel.TriggerFaultB = false;
+            FaultRecoveryTestPanel.NotifyFaultBInjected();
+            ImGui.BeginMenu("FaultyMenu");
+            ImGui.PushStyleColor(ImGuiCol.Text, 0xFF0000FF);
+            throw new InvalidOperationException("Simulated Fault B: Exception inside BeginMenu without PopStyleColor or EndMenu!");
+        }
+
+        // Master Dashboard toggle
+        if (ImGui.MenuItem("Master Dashboard", "", _masterPanel.IsOpen))
+        {
+            _masterPanel.IsOpen = !_masterPanel.IsOpen;
+        }
+
+        ImGui.Separator();
+
+        // Individual category panels
+        if (ImGui.MenuItem("1. Graphics & SwapChain Telemetry", "", _graphicsPanel.IsOpen))
+        {
+            _graphicsPanel.IsOpen = !_graphicsPanel.IsOpen;
+        }
+
+        if (ImGui.MenuItem("2. Concurrency & Lock-Free Pipelines", "", _concurrencyPanel.IsOpen))
+        {
+            _concurrencyPanel.IsOpen = !_concurrencyPanel.IsOpen;
+        }
+
+        if (ImGui.MenuItem("3. Input, Windows & Unicode Validator", "", _inputPanel.IsOpen))
+        {
+            _inputPanel.IsOpen = !_inputPanel.IsOpen;
+        }
+
+        if (ImGui.MenuItem("4. Fault Recovery & Lifecycle", "", _faultPanel.IsOpen))
+        {
+            _faultPanel.IsOpen = !_faultPanel.IsOpen;
+        }
+
+        if (ImGui.MenuItem("5. Profiler & Memory Benchmarks", "", _memoryPanel.IsOpen))
+        {
+            _memoryPanel.IsOpen = !_memoryPanel.IsOpen;
+        }
+
+        ImGui.Separator();
+
+        if (ImGui.MenuItem("Open All Test Windows"))
+        {
+            SetAllPanelsState(true);
+        }
+
+        if (ImGui.MenuItem("Close All Test Windows"))
+        {
+            SetAllPanelsState(false);
+        }
+
+        ImGui.Separator();
+
+        if (ImGui.MenuItem("Fault B: Trigger Menu Imbalance Crash"))
+        {
+            FaultRecoveryTestPanel.TriggerFaultB = true;
+        }
+    }
+
+    private void SetAllPanelsState(bool open)
+    {
+        _masterPanel.IsOpen = open;
+        _graphicsPanel.IsOpen = open;
+        _concurrencyPanel.IsOpen = open;
+        _inputPanel.IsOpen = open;
+        _faultPanel.IsOpen = open;
+        _memoryPanel.IsOpen = open;
     }
 }
