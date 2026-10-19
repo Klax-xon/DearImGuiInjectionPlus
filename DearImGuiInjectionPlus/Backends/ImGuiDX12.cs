@@ -243,7 +243,30 @@ internal static class ImGuiDX12
         }
         else if (swapChain.NativePointer != _currentSwapChainPtr)
         {
-            return;
+            bool sameDevice = false;
+            try
+            {
+                using (var newDevice = swapChain.GetDevice<Device>())
+                {
+                    if (_device != null && !_device.IsDisposed && newDevice != null && newDevice.NativePointer == _device.NativePointer)
+                    {
+                        sameDevice = true;
+                    }
+                }
+            }
+            catch
+            {
+                sameDevice = false;
+            }
+
+            if (sameDevice)
+            {
+                _currentSwapChainPtr = swapChain.NativePointer;
+            }
+            else
+            {
+                InvalidateDevice();
+            }
         }
 
         _currentSwapChain = swapChain;
@@ -420,10 +443,7 @@ internal static class ImGuiDX12
             backBufferFormat = Format.R8G8B8A8_UNorm;
         }
 
-        if (IsHdrFormat(backBufferFormat))
-        {
-            DearImGuiTheme.ApplyGammaCorrection(true);
-        }
+        DearImGuiTheme.ApplyGammaCorrection(IsHdrFormat(backBufferFormat));
 
         _fence = _device.CreateFence(0, FenceFlags.None);
         _fenceValue = 0;
@@ -488,12 +508,39 @@ internal static class ImGuiDX12
         if (_commandQueue == null || _frameContexts == null || _device == null || _rtvDescriptorHeap == null)
             return;
 
-        if (_currentSwapChainPtr != IntPtr.Zero && swapChain.NativePointer != _currentSwapChainPtr)
-            return;
-
         var windowHandle = swapChain.Description.OutputHandle;
         if (!IsTargetWindowHandle(windowHandle))
             return;
+
+        if (_currentSwapChainPtr != IntPtr.Zero && swapChain.NativePointer != _currentSwapChainPtr)
+        {
+            bool sameDevice = false;
+            try
+            {
+                using (var newDevice = swapChain.GetDevice<Device>())
+                {
+                    if (_device != null && !_device.IsDisposed && newDevice != null && newDevice.NativePointer == _device.NativePointer)
+                    {
+                        sameDevice = true;
+                    }
+                }
+            }
+            catch
+            {
+                sameDevice = false;
+            }
+
+            if (sameDevice)
+            {
+                _currentSwapChainPtr = swapChain.NativePointer;
+                _currentSwapChain = swapChain;
+            }
+            else
+            {
+                InvalidateDevice();
+                return;
+            }
+        }
 
         // Device loss check before rendering
         if (_device.IsDisposed || _device.DeviceRemovedReason.Failure)
@@ -582,10 +629,7 @@ internal static class ImGuiDX12
                     }
 
                     var backBufferFormat = backBufferResource.Description.Format;
-                    if (IsHdrFormat(backBufferFormat))
-                    {
-                        DearImGuiTheme.ApplyGammaCorrection(true);
-                    }
+                    DearImGuiTheme.ApplyGammaCorrection(IsHdrFormat(backBufferFormat));
 
                     if (backBufferFormat != Format.Unknown && backBufferFormat != ImGuiDX12Impl.RTVFormat)
                     {

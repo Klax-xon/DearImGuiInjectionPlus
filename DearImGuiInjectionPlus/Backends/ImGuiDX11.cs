@@ -171,10 +171,7 @@ internal static class ImGuiDX11
             catch { }
         }
 
-        if (IsHdrFormat(backBufferFormat))
-        {
-            DearImGuiTheme.ApplyGammaCorrection(true);
-        }
+        DearImGuiTheme.ApplyGammaCorrection(IsHdrFormat(backBufferFormat));
 
         ImGuiDX11Impl.Init((void*)_device.NativePointer, (void*)_deviceContext.NativePointer);
     }
@@ -205,7 +202,30 @@ internal static class ImGuiDX11
         }
         else if (swapChain.NativePointer != _currentSwapChainPtr)
         {
-            return;
+            bool sameDevice = false;
+            try
+            {
+                using (var newDevice = swapChain.GetDevice<Device>())
+                {
+                    if (_device != null && !_device.IsDisposed && newDevice != null && newDevice.NativePointer == _device.NativePointer)
+                    {
+                        sameDevice = true;
+                    }
+                }
+            }
+            catch
+            {
+                sameDevice = false;
+            }
+
+            if (sameDevice)
+            {
+                _currentSwapChainPtr = swapChain.NativePointer;
+            }
+            else
+            {
+                InvalidateDevice();
+            }
         }
 
         // Device loss detection
@@ -270,10 +290,7 @@ internal static class ImGuiDX11
                             return;
 
                         var bbFormat = backBuffer.Description.Format;
-                        if (IsHdrFormat(bbFormat))
-                        {
-                            DearImGuiTheme.ApplyGammaCorrection(true);
-                        }
+                        DearImGuiTheme.ApplyGammaCorrection(IsHdrFormat(bbFormat));
 
                         if (bbFormat == Format.R8G8B8A8_UNorm_SRgb)
                         {

@@ -292,6 +292,5 @@ public static class RendererFinder
         RendererKind = RendererKind.None;
         TargetRendererKind = RendererKind.None;
         OnRendererDetected = null;
-        IsShuttingDown = false;
     }
 }

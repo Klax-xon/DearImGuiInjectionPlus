@@ -19,7 +19,7 @@ public static unsafe class ImGuiWin32Impl
     private static readonly ConcurrentQueue<InputEvent> _eventQueue = new();
     private static long _time;
     private static long _ticksPerSecond;
-    private static ImGuiMouseCursor _lastMouseCursor;
+    private static volatile ImGuiMouseCursor _lastMouseCursor = ImGuiMouseCursor.COUNT;
 
 #pragma warning disable CS0169, CS0414
     private static bool _hasGamepad;
@@ -220,15 +220,11 @@ public static unsafe class ImGuiWin32Impl
 
     internal static bool ImGui_ImplWin32_UpdateMouseCursor()
     {
-        if (ImGui.GetCurrentContext() == IntPtr.Zero)
+        ImGuiMouseCursor imgui_cursor = _lastMouseCursor;
+        if (imgui_cursor == ImGuiMouseCursor.COUNT)
             return false;
 
-        var io = ImGui.GetIO();
-        if ((io.ConfigFlags & ImGuiConfigFlags.NoMouseCursorChange) != 0)
-            return false;
-
-        ImGuiMouseCursor imgui_cursor = ImGui.GetMouseCursor();
-        if (imgui_cursor == ImGuiMouseCursor.None || io.MouseDrawCursor)
+        if (imgui_cursor == ImGuiMouseCursor.None)
         {
             // Hide OS mouse cursor if imgui is drawing it or if it wants no cursor
             User32.SetCursor(IntPtr.Zero);
@@ -402,11 +398,14 @@ public static unsafe class ImGuiWin32Impl
         ImGui_ImplWin32_ProcessKeyEventsWorkarounds();
 
         // Update OS mouse cursor with the cursor requested by imgui
-        // INP-04: Handled strictly inside WndProcHandler on WM_SETCURSOR to respect Win32 thread affinity.
-        ImGuiMouseCursor mouse_cursor = io.MouseDrawCursor ? ImGuiMouseCursor.None : ImGui.GetMouseCursor();
-        if (_lastMouseCursor != mouse_cursor)
+        // INP-04 / RR-05: Cached on Present thread and read strictly inside WndProcHandler on WM_SETCURSOR to respect Win32 thread affinity.
+        if ((io.ConfigFlags & ImGuiConfigFlags.NoMouseCursorChange) != 0)
         {
-            _lastMouseCursor = mouse_cursor;
+            _lastMouseCursor = ImGuiMouseCursor.COUNT;
+        }
+        else
+        {
+            _lastMouseCursor = io.MouseDrawCursor ? ImGuiMouseCursor.None : ImGui.GetMouseCursor();
         }
 
         // Update game controllers (if enabled and available)
