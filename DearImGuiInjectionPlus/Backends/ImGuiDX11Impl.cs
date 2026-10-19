@@ -200,12 +200,7 @@ public static class ImGuiDX11Impl
         // Setup shader and vertex buffers
         deviceContext.InputAssembler.InputLayout = _inputLayout;
 
-        deviceContext.InputAssembler.SetVertexBuffers(0, new VertexBufferBinding()
-        {
-            Stride = sizeof(ImDrawVert),
-            Offset = 0,
-            Buffer = _vertexBuffer
-        });
+        deviceContext.InputAssembler.SetVertexBuffers(0, _vertexBinding);
         deviceContext.InputAssembler.SetIndexBuffer(_indexBuffer, SharpDX.DXGI.Format.R16_UInt, 0);
         deviceContext.InputAssembler.PrimitiveTopology = SharpDX.Direct3D.PrimitiveTopology.TriangleList;
         deviceContext.VertexShader.SetShader(_vertexShader, null, 0);
@@ -380,8 +375,7 @@ public static class ImGuiDX11Impl
                         continue;
 
                     // Apply scissor/clipping rectangle
-                    RawRectangle r = new((int)clip_min.X, (int)clip_min.Y, (int)clip_max.X, (int)clip_max.Y);
-                    ctx.Rasterizer.SetScissorRectangles(r);
+                    ctx.Rasterizer.SetScissorRectangle((int)clip_min.X, (int)clip_min.Y, (int)clip_max.X, (int)clip_max.Y);
 
                     // MEM-04: Bind texture via native ID3D11DeviceContext::PSSetShaderResources vtable call (slot 8)
                     // Avoids allocating transient SharpDX ShaderResourceView wrappers and subsequent finalizer thread over-releases
@@ -644,7 +638,10 @@ public static class ImGuiDX11Impl
 
             DisposeAll(PSResourceViews);
 
+            Array.Clear(ScissorRects, 0, ScissorRectsCount);
             ScissorRectsCount = 0;
+
+            Array.Clear(Viewports, 0, ViewportsCount);
             ViewportsCount = 0;
         }
 
@@ -849,6 +846,7 @@ public static class ImGuiDX11Impl
 
         _vertexBuffer?.Dispose();
         _vertexBuffer = null;
+        _vertexBinding = default;
 
         _blendState?.Dispose();
         _blendState = null;

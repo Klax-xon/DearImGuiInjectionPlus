@@ -29,6 +29,7 @@ internal static class ImGuiDX12
     private static FrameContext[] _frameContexts;
     private static GraphicsCommandList _commandList;
     private static DescriptorHeap _shaderDescriptorHeap;
+    private static readonly DescriptorHeap[] _shaderDescriptorHeaps = new DescriptorHeap[1];
     private static DescriptorHeap _rtvDescriptorHeap;
     private static Device _device;
 
@@ -134,6 +135,7 @@ internal static class ImGuiDX12
 
         try { _shaderDescriptorHeap?.Dispose(); } catch { }
         _shaderDescriptorHeap = null;
+        _shaderDescriptorHeaps[0] = null;
 
         try { _fence?.Dispose(); } catch { }
         _fence = null;
@@ -455,6 +457,7 @@ internal static class ImGuiDX12
             DescriptorCount = bufferCount,
             Flags = DescriptorHeapFlags.ShaderVisible
         });
+        _shaderDescriptorHeaps[0] = _shaderDescriptorHeap;
 
         _rtvDescriptorHeap = _device.CreateDescriptorHeap(new DescriptorHeapDescription
         {
@@ -644,7 +647,7 @@ internal static class ImGuiDX12
                     _commandList.ResourceBarrierTransition(backBufferResource, ResourceStates.Present, ResourceStates.RenderTarget);
 
                     _commandList.SetRenderTargets(_rtvDescriptorHeap.CPUDescriptorHandleForHeapStart, null);
-                    _commandList.SetDescriptorHeaps(_shaderDescriptorHeap);
+                    _commandList.SetDescriptorHeaps(_shaderDescriptorHeaps);
 
                     var drawData = ImGui.GetDrawData();
                     ImGuiDX12Impl.RenderDrawData(drawData, _commandList, currentFrameContext);

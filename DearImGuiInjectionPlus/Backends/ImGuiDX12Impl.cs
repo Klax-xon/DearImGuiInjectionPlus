@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Numerics;
@@ -133,6 +134,7 @@ public static class ImGuiDX12Impl
     }
 
     private unsafe delegate void ImDrawUserCallBack(ImDrawList* a, ImDrawCmd* b);
+    private static readonly Dictionary<IntPtr, ImDrawUserCallBack> _userCallbackCache = new();
 
     internal static unsafe void RenderDrawData(ImDrawData* draw_data, GraphicsCommandList ctx, ImGuiDX12.FrameContext fr)
     {
@@ -272,14 +274,21 @@ public static class ImGuiDX12Impl
                 var pcmd = cmd_list->CmdBuffer.Ref<ImDrawCmd>(cmd_i);
                 if (pcmd.UserCallback != IntPtr.Zero)
                 {
-                    var userCallback = Marshal.GetDelegateForFunctionPointer<ImDrawUserCallBack>(pcmd.UserCallback);
-
                     // User callback, registered via ImDrawList::AddCallback()
                     // (ImDrawCallback_ResetRenderState is a special callback value used by the user to request the renderer to reset render state.)
                     if (pcmd.UserCallback == new IntPtr(-1))
+                    {
                         ImGui_ImplDX12_SetupRenderState(draw_data, ctx, vertexBuffer, vertexBufferSize, indexBuffer, indexBufferSize);
+                    }
                     else
+                    {
+                        if (!_userCallbackCache.TryGetValue(pcmd.UserCallback, out var userCallback))
+                        {
+                            userCallback = Marshal.GetDelegateForFunctionPointer<ImDrawUserCallBack>(pcmd.UserCallback);
+                            _userCallbackCache[pcmd.UserCallback] = userCallback;
+                        }
                         userCallback(cmd_list, &pcmd);
+                    }
                 }
                 else
                 {
@@ -719,6 +728,8 @@ public static class ImGuiDX12Impl
             pFrameResources = Array.Empty<RenderBuffer>();
             numFramesInFlight = 0;
         }
+
+        _userCallbackCache.Clear();
     }
 
     internal static unsafe void Init(void* device, int num_frames_in_flight, Format rtv_format, void* cbv_srv_heap,
