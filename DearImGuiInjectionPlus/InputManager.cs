@@ -554,23 +554,23 @@ internal static class InputManager
     {
         try
         {
-            NewInputSystemBlocker.SetBlocked(visible);
-        }
-        catch (Exception ex)
-        {
-            Log.Warning($"[InputManager] Error in NewInputSystemBlocker.SetBlocked: {ex.Message}");
-        }
-
-        try
-        {
             if (visible)
             {
                 CaptureDepressedKeys();
                 User32.ClipCursor(IntPtr.Zero);
 
-                // INP-09: Dispatch Unity cursor API mutations to the main scripting thread
+                // INP-09: Dispatch Unity cursor and InputSystem mutations to the main scripting thread
                 UnityMainThreadDispatcher.Enqueue(() =>
                 {
+                    try
+                    {
+                        NewInputSystemBlocker.SetBlocked(true);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning($"[InputManager] Error in NewInputSystemBlocker.SetBlocked(true): {ex.Message}");
+                    }
+
                     try
                     {
                         if (Cursor.lockState != CursorLockMode.None)
@@ -612,9 +612,18 @@ internal static class InputManager
                 // INP-02: Synthesize release events for keys/buttons still marked down
                 ReleaseRemainingDepressedKeys(_windowHandle);
 
-                // INP-09: Dispatch Unity cursor API mutations to the main scripting thread
+                // INP-09: Dispatch Unity cursor and InputSystem mutations to the main scripting thread
                 UnityMainThreadDispatcher.Enqueue(() =>
                 {
+                    try
+                    {
+                        NewInputSystemBlocker.SetBlocked(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning($"[InputManager] Error in NewInputSystemBlocker.SetBlocked(false): {ex.Message}");
+                    }
+
                     try
                     {
                         try

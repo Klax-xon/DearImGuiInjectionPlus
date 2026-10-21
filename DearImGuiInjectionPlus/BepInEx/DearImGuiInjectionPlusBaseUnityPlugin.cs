@@ -84,30 +84,26 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
             }
         }
 
-        DearImGuiInjectionPlus.Init(Paths.ConfigPath, assetsFolder, cursorVisibilityConfig);
-
-        try
+        // 1. Register and spawn internal MonoBehaviour types BEFORE activating native Present hooks (Fixes AUD-06)
+        UnityMainThreadDispatcher.Register();
+        if (!ClassInjector.IsTypeRegisteredInIl2Cpp<DearImGuiInjectionPlusRunner>())
         {
-            _harmony = new Harmony(Metadata.GUID);
-            _harmony.PatchAll(Assembly.GetExecutingAssembly());
-            PluginLog.Info("[DearImGuiInjectionPlus] Successfully applied Harmony patches for cursor management.");
-        }
-        catch (Exception ex)
-        {
-            PluginLog.Error($"[DearImGuiInjectionPlus] Failed to apply Harmony patches: {ex}");
+            ClassInjector.RegisterTypeInIl2Cpp<DearImGuiInjectionPlusRunner>();
         }
 
-        // Register internal MonoBehaviour types prior to adding components
-        ClassInjector.RegisterTypeInIl2Cpp<UnityMainThreadDispatcher>();
-        ClassInjector.RegisterTypeInIl2Cpp<DearImGuiInjectionPlusRunner>();
-
-        // Spawn a dedicated GameObject marked with Object.DontDestroyOnLoad to host frame tick operations
+        // Use HideInHierarchy + DontDestroyOnLoad so Unity still dispatches OnApplicationQuit / OnDestroy on engine exit (Fixes AUD-05)
         _runnerGo = new GameObject("DearImGuiInjectionPlus_Runner");
-        _runnerGo.hideFlags = HideFlags.HideAndDontSave;
+        _runnerGo.hideFlags = HideFlags.HideInHierarchy;
         UnityEngine.Object.DontDestroyOnLoad(_runnerGo);
 
         _runnerGo.AddComponent<UnityMainThreadDispatcher>();
         _runnerGo.AddComponent<DearImGuiInjectionPlusRunner>();
+
+        // 2. Apply Harmony patches with per-method isolation against IL2CPP UnityLinker stripping (Fixes AUD-01)
+        ApplyHarmonyPatchesSafely();
+
+        // 3. Initialize native SwapChain hooks after dispatcher and patches are ready
+        DearImGuiInjectionPlus.Init(Paths.ConfigPath, assetsFolder, cursorVisibilityConfig);
 
         PluginLog.Info("[DearImGuiInjectionPlus] Bootstrap complete.");
     }
@@ -156,13 +152,89 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
         }
     }
 
+    private static void ApplyHarmonyPatchesSafely()
+    {
+        _harmony = new Harmony(Metadata.GUID);
+        int applied = 0;
+        int skipped = 0;
+
+        foreach (var type in Assembly.GetExecutingAssembly().GetTypes())
+        {
+            if (type.GetCustomAttributes(typeof(HarmonyPatch), false).Length == 0)
+                continue;
+
+            // Patch class-level [HarmonyPatch] types (CursorLockStatePatch, CursorVisiblePatch, EventSystemBlocker)
+            if (type != typeof(UnityInputBlocker))
+            {
+                try
+                {
+                    _harmony.CreateClassProcessor(type).Patch();
+                    applied++;
+                }
+                catch (Exception ex)
+                {
+                    skipped++;
+                    PluginLog.Warning($"[DearImGuiInjectionPlus] Skipped patch class {type.Name} (method likely stripped in IL2CPP): {ex.Message}");
+                }
+                continue;
+            }
+
+            // Patch UnityInputBlocker methods individually so a single stripped Input method does not abort the rest
+            foreach (var method in type.GetMethods(BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public))
+            {
+                var patchAttrs = method.GetCustomAttributes<HarmonyPatch>(false);
+                foreach (var attr in patchAttrs)
+                {
+                    try
+                    {
+                        var targetType = attr.info.declaringType;
+                        var methodName = attr.info.methodName;
+                        var methodType = attr.info.methodType ?? MethodType.Normal;
+                        var argTypes = attr.info.argumentTypes;
+
+                        MethodBase targetMethod = methodType switch
+                        {
+                            MethodType.Getter => argTypes != null
+                                ? targetType.GetProperty(methodName, argTypes)?.GetGetMethod()
+                                : targetType.GetProperty(methodName)?.GetGetMethod(),
+                            MethodType.Setter => argTypes != null
+                                ? targetType.GetProperty(methodName, argTypes)?.GetSetMethod()
+                                : targetType.GetProperty(methodName)?.GetSetMethod(),
+                            _ => argTypes != null
+                                ? targetType.GetMethod(methodName, argTypes)
+                                : targetType.GetMethod(methodName)
+                        };
+
+                        if (targetMethod == null)
+                        {
+                            skipped++;
+                            continue;
+                        }
+
+                        var prefix = method.GetCustomAttribute<HarmonyPrefix>() != null ? new HarmonyMethod(method) : null;
+                        var postfix = method.GetCustomAttribute<HarmonyPostfix>() != null ? new HarmonyMethod(method) : null;
+                        _harmony.Patch(targetMethod, prefix, postfix);
+                        applied++;
+                    }
+                    catch (Exception ex)
+                    {
+                        skipped++;
+                        PluginLog.Warning($"[DearImGuiInjectionPlus] Skipped stripped IL2CPP Input patch {method.Name} ({attr.info.methodName}): {ex.Message}");
+                    }
+                }
+            }
+        }
+
+        PluginLog.Info($"[DearImGuiInjectionPlus] Harmony patching complete ({applied} applied, {skipped} skipped).");
+    }
+
     public override bool Unload()
     {
-        Shutdown();
+        Shutdown(fromOnDestroy: false);
         return true;
     }
 
-    internal static void Shutdown()
+    internal static void Shutdown(bool fromOnDestroy = false)
     {
         if (RendererFinder.RendererFinder.IsShuttingDown)
             return;
@@ -206,10 +278,10 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
         // 4. Wait for GPU idle & 5. Destroy graphics resources and ImGui context
         DearImGuiInjectionPlus.Dispose();
 
-        if (_runnerGo != null)
+        var go = _runnerGo;
+        _runnerGo = null;
+        if (!fromOnDestroy && go != null)
         {
-            var go = _runnerGo;
-            _runnerGo = null;
             try
             {
                 UnityEngine.Object.Destroy(go);

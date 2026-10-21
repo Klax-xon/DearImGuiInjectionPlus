@@ -6,6 +6,8 @@ namespace DearImGuiInjectionPlus.BepInEx;
 
 public class DearImGuiInjectionPlusRunner : MonoBehaviour
 {
+    private static bool _legacyMousePosSupported = true;
+
     public DearImGuiInjectionPlusRunner(IntPtr handle) : base(handle) { }
 
     private void Update()
@@ -16,9 +18,16 @@ public class DearImGuiInjectionPlusRunner : MonoBehaviour
         }
         else
         {
-            if (!DearImGuiInjectionPlus.IsCursorVisible)
+            if (!DearImGuiInjectionPlus.IsCursorVisible && _legacyMousePosSupported)
             {
-                UnityInputBlocker.LastMousePosition = Input.mousePosition;
+                try
+                {
+                    UnityInputBlocker.LastMousePosition = Input.mousePosition;
+                }
+                catch
+                {
+                    _legacyMousePosSupported = false;
+                }
             }
             NewInputSystemBlocker.RestoreDevicesIfNeeded();
         }
@@ -35,8 +44,13 @@ public class DearImGuiInjectionPlusRunner : MonoBehaviour
         InputManager.EnforceCursorStateOnMainThread();
     }
 
+    private void OnApplicationQuit()
+    {
+        DearImGuiInjectionPlusBaseUnityPlugin.Shutdown(fromOnDestroy: false);
+    }
+
     private void OnDestroy()
     {
-        DearImGuiInjectionPlusBaseUnityPlugin.Shutdown();
+        DearImGuiInjectionPlusBaseUnityPlugin.Shutdown(fromOnDestroy: true);
     }
 }

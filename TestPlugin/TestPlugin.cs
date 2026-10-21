@@ -130,10 +130,13 @@ public class TestPlugin : BasePlugin
         RegisterWindowsAndTabs();
 
         // 4. Register and spawn TestPluginRunner MonoBehaviour
-        ClassInjector.RegisterTypeInIl2Cpp<TestPluginRunner>();
+        if (!ClassInjector.IsTypeRegisteredInIl2Cpp<TestPluginRunner>())
+        {
+            ClassInjector.RegisterTypeInIl2Cpp<TestPluginRunner>();
+        }
 
         _runnerGo = new GameObject("TestPlugin_Runner");
-        _runnerGo.hideFlags = HideFlags.HideAndDontSave;
+        _runnerGo.hideFlags = HideFlags.HideInHierarchy;
         UnityEngine.Object.DontDestroyOnLoad(_runnerGo);
 
         _runner = _runnerGo.AddComponent<TestPluginRunner>();
@@ -173,11 +176,11 @@ public class TestPlugin : BasePlugin
 
     public override bool Unload()
     {
-        Teardown();
+        Teardown(fromOnDestroy: false);
         return true;
     }
 
-    public void Teardown()
+    public void Teardown(bool fromOnDestroy = false)
     {
         if (_isTornDown)
             return;
@@ -226,10 +229,10 @@ public class TestPlugin : BasePlugin
             PluginLog.Error($"[TestPlugin] Error writing teardown timestamp: {ex.Message}");
         }
 
-        if (_runnerGo != null)
+        var go = _runnerGo;
+        _runnerGo = null;
+        if (!fromOnDestroy && go != null)
         {
-            var go = _runnerGo;
-            _runnerGo = null;
             try
             {
                 UnityEngine.Object.Destroy(go);

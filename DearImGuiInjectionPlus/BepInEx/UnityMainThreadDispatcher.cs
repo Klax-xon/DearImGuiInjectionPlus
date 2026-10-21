@@ -32,13 +32,21 @@ public class UnityMainThreadDispatcher : MonoBehaviour
     public UnityMainThreadDispatcher(IntPtr handle) : base(handle) { }
 
     /// <summary>
-    /// Registers the UnityMainThreadDispatcher type with the IL2CPP domain.
+    /// Registers the UnityMainThreadDispatcher type with the IL2CPP domain and captures the calling main thread ID.
     /// </summary>
     public static void Register()
     {
+        if (_mainThreadId <= 0)
+        {
+            _mainThreadId = Thread.CurrentThread.ManagedThreadId;
+        }
+
         if (!_registered)
         {
-            ClassInjector.RegisterTypeInIl2Cpp<UnityMainThreadDispatcher>();
+            if (!ClassInjector.IsTypeRegisteredInIl2Cpp<UnityMainThreadDispatcher>())
+            {
+                ClassInjector.RegisterTypeInIl2Cpp<UnityMainThreadDispatcher>();
+            }
             _registered = true;
         }
     }
@@ -52,7 +60,6 @@ public class UnityMainThreadDispatcher : MonoBehaviour
     {
         _instance = this;
         _mainThreadId = Thread.CurrentThread.ManagedThreadId;
-        UnityEngine.Object.DontDestroyOnLoad(gameObject);
     }
 
     private void OnDestroy()
