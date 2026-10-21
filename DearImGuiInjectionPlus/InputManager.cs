@@ -21,11 +21,23 @@ internal static class InputManager
     private static readonly Comctl32.SubclassProc _subclassProcDelegate = SubclassHandler;
     private static bool _isSubclassed;
 
-    // Bitmask for tracking keys/buttons (0-255) depressed when overlay became visible (INP-02)
+    // Bitmask for tracking keys/buttons (0-255) depressed when overlay became visible or during passthrough (INP-02)
     private static ulong _downKeys0;
     private static ulong _downKeys1;
     private static ulong _downKeys2;
     private static ulong _downKeys3;
+    private static volatile int _pendingKeyReleaseFlushFrames;
+
+    internal static bool HasPendingKeyReleaseFlush => _pendingKeyReleaseFlushFrames > 0;
+
+    internal static void ConsumePendingKeyReleaseFlushFrame()
+    {
+        int current = _pendingKeyReleaseFlushFrames;
+        if (current > 0)
+        {
+            _pendingKeyReleaseFlushFrames = current - 1;
+        }
+    }
 
     public static IntPtr WindowHandle => _windowHandle;
 
@@ -259,10 +271,11 @@ internal static class InputManager
             // Swallow mouse messages (clicks, moves, wheels) if blocking all inputs or ImGui wants mouse capture
             if (IsMouseMessage(msg))
             {
-                // INP-02: Permit mouse button UP events through if the button was depressed when overlay opened
+                // INP-02: Permit mouse button UP events through if the button was depressed when overlay opened or during passthrough
                 var mouseUpKey = GetMouseUpVirtualKey(msg, wParam);
                 if (mouseUpKey.HasValue && CheckAndClearKey((int)mouseUpKey.Value))
                 {
+                    _pendingKeyReleaseFlushFrames = 2;
                     return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
                 }
 
@@ -270,17 +283,26 @@ internal static class InputManager
                 {
                     return IntPtr.Zero;
                 }
+
+                // Track mouse buttons pressed during selective passthrough so they can be flushed if capture engages
+                var mouseDownKey = GetMouseDownVirtualKey(msg, wParam);
+                if (mouseDownKey.HasValue)
+                {
+                    SetKeyDown((int)mouseDownKey.Value);
+                }
+
                 return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
             }
 
             // Swallow keyboard messages (letters, numbers, modifiers) if blocking all inputs or ImGui wants keyboard capture
             if (IsKeyboardMessage(msg))
             {
-                // INP-02: Permit key UP events through if the key was depressed when overlay opened
+                // INP-02: Permit key UP events through if the key was depressed when overlay opened or during passthrough
                 if (msg == WindowMessage.WM_KEYUP || msg == WindowMessage.WM_SYSKEYUP)
                 {
                     if (CheckAndClearKey((int)wParam))
                     {
+                        _pendingKeyReleaseFlushFrames = 2;
                         return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
                     }
                 }
@@ -296,6 +318,13 @@ internal static class InputManager
 
                     return IntPtr.Zero;
                 }
+
+                // Track keyboard keys pressed during selective passthrough so they can be flushed if capture engages
+                if (msg == WindowMessage.WM_KEYDOWN || msg == WindowMessage.WM_SYSKEYDOWN)
+                {
+                    SetKeyDown((int)wParam);
+                }
+
                 return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
             }
 
@@ -367,9 +396,13 @@ internal static class InputManager
         _downKeys0 = _downKeys1 = _downKeys2 = _downKeys3 = 0;
     }
 
-    private static void CaptureDepressedKeys()
+    private static void CaptureDepressedKeys(bool clearExisting = true)
     {
-        ClearAllDownKeys();
+        if (clearExisting)
+        {
+            ClearAllDownKeys();
+        }
+
         int toggle = (int)ToggleKey;
         for (int vk = 1; vk < 256; vk++)
         {
@@ -380,6 +413,36 @@ internal static class InputManager
             {
                 SetKeyDown(vk);
             }
+        }
+    }
+
+    internal static void FlushDepressedKeysOnCaptureTransition()
+    {
+        try
+        {
+            CaptureDepressedKeys(clearExisting: false);
+            if (HasAnyDownKeys())
+            {
+                _pendingKeyReleaseFlushFrames = 2;
+                ReleaseRemainingDepressedKeys(_windowHandle, keepTrackedForSubclassPassThrough: DearImGuiInjectionPlus.IsCursorVisible);
+            }
+
+            UnityMainThreadDispatcher.Enqueue(() =>
+            {
+                try
+                {
+                    UnityInputBlocker.TryResetInputAxes();
+                    NewInputSystemBlocker.EnforceBlocked(UnityInputBlocker.ShouldBlockMouse(), UnityInputBlocker.ShouldBlockKeyboard());
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning($"[InputManager] Error flushing input state on main thread: {ex.Message}");
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[InputManager] Error in FlushDepressedKeysOnCaptureTransition: {ex.Message}");
         }
     }
 
@@ -435,6 +498,17 @@ internal static class InputManager
         return down;
     }
 
+    private static VirtualKey? GetMouseDownVirtualKey(WindowMessage msg, IntPtr wParam) => msg switch
+    {
+        WindowMessage.WM_LBUTTONDOWN or WindowMessage.WM_LBUTTONDBLCLK => VirtualKey.LeftButton,
+        WindowMessage.WM_RBUTTONDOWN or WindowMessage.WM_RBUTTONDBLCLK => VirtualKey.RightButton,
+        WindowMessage.WM_MBUTTONDOWN or WindowMessage.WM_MBUTTONDBLCLK => VirtualKey.MiddleButton,
+        WindowMessage.WM_XBUTTONDOWN or WindowMessage.WM_XBUTTONDBLCLK => ImGuiWin32Impl.GET_XBUTTON_WPARAM(wParam) == 1
+            ? VirtualKey.ExtraButton1
+            : VirtualKey.ExtraButton2,
+        _ => null
+    };
+
     private static VirtualKey? GetMouseUpVirtualKey(WindowMessage msg, IntPtr wParam) => msg switch
     {
         WindowMessage.WM_LBUTTONUP => VirtualKey.LeftButton,
@@ -446,11 +520,14 @@ internal static class InputManager
         _ => null
     };
 
-    private static void ReleaseRemainingDepressedKeys(IntPtr hWnd)
+    private static void ReleaseRemainingDepressedKeys(IntPtr hWnd, bool keepTrackedForSubclassPassThrough = false)
     {
         if (hWnd == IntPtr.Zero || !HasAnyDownKeys())
         {
-            ClearAllDownKeys();
+            if (!keepTrackedForSubclassPassThrough)
+            {
+                ClearAllDownKeys();
+            }
             return;
         }
 
@@ -505,7 +582,10 @@ internal static class InputManager
         }
         finally
         {
-            ClearAllDownKeys();
+            if (!keepTrackedForSubclassPassThrough)
+            {
+                ClearAllDownKeys();
+            }
         }
     }
 
@@ -557,6 +637,11 @@ internal static class InputManager
             if (visible)
             {
                 CaptureDepressedKeys();
+                if (DearImGuiInjectionPlus.BlockAllInputsWhenOpen && HasAnyDownKeys())
+                {
+                    _pendingKeyReleaseFlushFrames = 2;
+                    ReleaseRemainingDepressedKeys(_windowHandle, keepTrackedForSubclassPassThrough: true);
+                }
                 User32.ClipCursor(IntPtr.Zero);
 
                 // INP-09: Dispatch Unity cursor and InputSystem mutations to the main scripting thread
@@ -564,6 +649,10 @@ internal static class InputManager
                 {
                     try
                     {
+                        if (DearImGuiInjectionPlus.BlockAllInputsWhenOpen)
+                        {
+                            UnityInputBlocker.TryResetInputAxes();
+                        }
                         NewInputSystemBlocker.SetBlocked(true);
                     }
                     catch (Exception ex)

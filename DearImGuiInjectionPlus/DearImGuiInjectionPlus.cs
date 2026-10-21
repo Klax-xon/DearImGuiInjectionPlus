@@ -63,10 +63,24 @@ public static class DearImGuiInjectionPlus
     public static IConfigEntry<VirtualKey> CursorVisibilityToggle { get; internal set; }
     public const VirtualKey CursorVisibilityToggleDefault = VirtualKey.Insert;
 
+    private static volatile bool _blockAllInputsWhenOpen = true;
+
     /// <summary>
     /// If true, blocks all game inputs (mouse clicks, movement, keystrokes) while the menu is open.
     /// </summary>
-    public static bool BlockAllInputsWhenOpen { get; set; } = true;
+    public static bool BlockAllInputsWhenOpen
+    {
+        get => _blockAllInputsWhenOpen;
+        set
+        {
+            bool prev = _blockAllInputsWhenOpen;
+            _blockAllInputsWhenOpen = value;
+            if (!prev && value && _isCursorVisible)
+            {
+                InputManager.FlushDepressedKeysOnCaptureTransition();
+            }
+        }
+    }
 
     /// <summary>
     /// Current Win32 target window handle (HWND) subclassed by the injection framework.
@@ -604,8 +618,21 @@ public static class DearImGuiInjectionPlus
             GraphicsTelemetry.TotalIndices = drawData.TotalIdxCount;
         }
 
-        _wantCaptureMouse = IO.NativePtr != null && IO.WantCaptureMouse;
-        _wantCaptureKeyboard = IO.NativePtr != null && IO.WantCaptureKeyboard;
+        bool prevCaptureMouse = _wantCaptureMouse;
+        bool prevCaptureKeyboard = _wantCaptureKeyboard;
+        bool nextCaptureMouse = IO.NativePtr != null && IO.WantCaptureMouse;
+        bool nextCaptureKeyboard = IO.NativePtr != null && IO.WantCaptureKeyboard;
+
+        _wantCaptureMouse = nextCaptureMouse;
+        _wantCaptureKeyboard = nextCaptureKeyboard;
+
+        if (_isCursorVisible && !_blockAllInputsWhenOpen)
+        {
+            if ((!prevCaptureMouse && nextCaptureMouse) || (!prevCaptureKeyboard && nextCaptureKeyboard))
+            {
+                InputManager.FlushDepressedKeysOnCaptureTransition();
+            }
+        }
     }
 
     private static class Native

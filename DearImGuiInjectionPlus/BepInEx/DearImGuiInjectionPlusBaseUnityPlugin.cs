@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
@@ -7,6 +9,8 @@ using BepInEx.Unity.IL2CPP;
 using DearImGuiInjectionPlus.Patches;
 using DearImGuiInjectionPlus.Windows;
 using HarmonyLib;
+using Il2CppInterop.Common;
+using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.Injection;
 using RendererFinder;
 using RendererFinder.Renderers;
@@ -157,10 +161,12 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
         _harmony = new Harmony(Metadata.GUID);
         int applied = 0;
         int skipped = 0;
+        const BindingFlags AllFlags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance;
 
         foreach (var type in Assembly.GetExecutingAssembly().GetTypes())
         {
-            if (type.GetCustomAttributes(typeof(HarmonyPatch), false).Length == 0)
+            var classPatchAttrs = type.GetCustomAttributes<HarmonyPatch>(false).ToArray();
+            if (classPatchAttrs.Length == 0)
                 continue;
 
             // Patch class-level [HarmonyPatch] types (CursorLockStatePatch, CursorVisiblePatch, EventSystemBlocker)
@@ -179,6 +185,9 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
                 continue;
             }
 
+            var classDeclaringType = classPatchAttrs.Select(a => a.info?.declaringType).FirstOrDefault(t => t != null);
+            var patchGroups = new Dictionary<MethodBase, (HarmonyMethod Prefix, HarmonyMethod Postfix)>();
+
             // Patch UnityInputBlocker methods individually so a single stripped Input method does not abort the rest
             foreach (var method in type.GetMethods(BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public))
             {
@@ -187,22 +196,28 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
                 {
                     try
                     {
-                        var targetType = attr.info.declaringType;
+                        var targetType = attr.info.declaringType ?? classDeclaringType;
                         var methodName = attr.info.methodName;
                         var methodType = attr.info.methodType ?? MethodType.Normal;
                         var argTypes = attr.info.argumentTypes;
 
+                        if (targetType == null || string.IsNullOrEmpty(methodName))
+                        {
+                            skipped++;
+                            continue;
+                        }
+
                         MethodBase targetMethod = methodType switch
                         {
                             MethodType.Getter => argTypes != null
-                                ? targetType.GetProperty(methodName, argTypes)?.GetGetMethod()
-                                : targetType.GetProperty(methodName)?.GetGetMethod(),
+                                ? targetType.GetProperty(methodName, AllFlags, null, null, argTypes, null)?.GetGetMethod(true)
+                                : targetType.GetProperty(methodName, AllFlags)?.GetGetMethod(true),
                             MethodType.Setter => argTypes != null
-                                ? targetType.GetProperty(methodName, argTypes)?.GetSetMethod()
-                                : targetType.GetProperty(methodName)?.GetSetMethod(),
+                                ? targetType.GetProperty(methodName, AllFlags, null, null, argTypes, null)?.GetSetMethod(true)
+                                : targetType.GetProperty(methodName, AllFlags)?.GetSetMethod(true),
                             _ => argTypes != null
-                                ? targetType.GetMethod(methodName, argTypes)
-                                : targetType.GetMethod(methodName)
+                                ? targetType.GetMethod(methodName, AllFlags, null, argTypes, null)
+                                : targetType.GetMethod(methodName, AllFlags)
                         };
 
                         if (targetMethod == null)
@@ -211,10 +226,26 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
                             continue;
                         }
 
-                        var prefix = method.GetCustomAttribute<HarmonyPrefix>() != null ? new HarmonyMethod(method) : null;
-                        var postfix = method.GetCustomAttribute<HarmonyPostfix>() != null ? new HarmonyMethod(method) : null;
-                        _harmony.Patch(targetMethod, prefix, postfix);
-                        applied++;
+                        // Verify that the IL2CPP method has a non-null native MethodInfo pointer (was not stripped by UnityLinker)
+                        System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(targetType.TypeHandle);
+                        var nativePtrField = Il2CppInteropUtils.GetIl2CppMethodInfoPointerFieldForGeneratedMethod(targetMethod);
+                        if (nativePtrField == null || (IntPtr)nativePtrField.GetValue(null) == IntPtr.Zero)
+                        {
+                            skipped++;
+                            continue;
+                        }
+
+                        var prefix = method.GetCustomAttribute<HarmonyPrefix>() != null ? new HarmonyMethod { method = method } : null;
+                        var postfix = method.GetCustomAttribute<HarmonyPostfix>() != null ? new HarmonyMethod { method = method } : null;
+
+                        if (patchGroups.TryGetValue(targetMethod, out var existing))
+                        {
+                            patchGroups[targetMethod] = (existing.Prefix ?? prefix, existing.Postfix ?? postfix);
+                        }
+                        else
+                        {
+                            patchGroups[targetMethod] = (prefix, postfix);
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -223,9 +254,32 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
                     }
                 }
             }
+
+            foreach (var kvp in patchGroups)
+            {
+                try
+                {
+                    _harmony.Patch(kvp.Key, kvp.Value.Prefix, kvp.Value.Postfix);
+                    applied++;
+                }
+                catch (Exception ex)
+                {
+                    skipped++;
+                    PluginLog.Warning($"[DearImGuiInjectionPlus] Skipped IL2CPP Input detour for {kvp.Key.Name}: {ex.Message}");
+                }
+            }
         }
 
-        PluginLog.Info($"[DearImGuiInjectionPlus] Harmony patching complete ({applied} applied, {skipped} skipped).");
+        // Patch UnityEngine.Internal.InputUnsafeUtility (CallerCount: 57 for GetAxis, 47 for GetAxisRaw) & SendMouseEvents
+        UnityInputBlocker.ApplyInternalHarmonyPatches(_harmony, ref applied, ref skipped);
+
+        // Detour underlying UnityPlayer.dll ICalls directly to defeat C++ /O2 inlining of 1-line Input/Cursor wrappers
+        UnityInputBlocker.ApplyNativeICallHooks(ref applied, ref skipped);
+
+        // Also hook UnityEngineInternal.Input.NativeInputSystem.NotifyUpdate for New Input System raw event filtering
+        NewInputSystemBlocker.ApplyNativeInputHook(_harmony, ref applied, ref skipped);
+
+        PluginLog.Info($"[DearImGuiInjectionPlus] Harmony & native ICall patching complete ({applied} applied, {skipped} skipped).");
     }
 
     public override bool Unload()
@@ -249,6 +303,15 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
         catch (Exception ex)
         {
             PluginLog.Warning($"[DearImGuiInjectionPlus] Error unblocking NewInputSystem on shutdown: {ex.Message}");
+        }
+
+        try
+        {
+            UnityInputBlocker.DisposeNativeICallHooks();
+        }
+        catch (Exception ex)
+        {
+            PluginLog.Warning($"[DearImGuiInjectionPlus] Error disposing native ICall hooks: {ex.Message}");
         }
 
         try

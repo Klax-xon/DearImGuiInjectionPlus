@@ -7,14 +7,29 @@ namespace DearImGuiInjectionPlus.BepInEx;
 public class DearImGuiInjectionPlusRunner : MonoBehaviour
 {
     private static bool _legacyMousePosSupported = true;
+    private bool _wasBlockingMouse;
+    private bool _wasBlockingKeyboard;
 
     public DearImGuiInjectionPlusRunner(IntPtr handle) : base(handle) { }
 
     private void Update()
     {
-        if (DearImGuiInjectionPlus.IsCursorVisible && DearImGuiInjectionPlus.BlockAllInputsWhenOpen)
+        bool blockMouse = UnityInputBlocker.ShouldBlockMouse();
+        bool blockKeyboard = UnityInputBlocker.ShouldBlockKeyboard();
+
+        // Detect transition from passthrough (false) to blocked (true) and immediately flush held keys/axes
+        if ((!_wasBlockingKeyboard && blockKeyboard) || (!_wasBlockingMouse && blockMouse))
         {
-            NewInputSystemBlocker.EnforceBlocked();
+            InputManager.FlushDepressedKeysOnCaptureTransition();
+            UnityInputBlocker.TryResetInputAxes();
+        }
+
+        _wasBlockingMouse = blockMouse;
+        _wasBlockingKeyboard = blockKeyboard;
+
+        if (blockMouse || blockKeyboard)
+        {
+            NewInputSystemBlocker.EnforceBlocked(blockMouse, blockKeyboard);
         }
         else
         {
