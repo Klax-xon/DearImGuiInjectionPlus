@@ -2,16 +2,17 @@
 
 	<PropertyGroup>
 		<OutputType>Library</OutputType>
-		<PlatformTarget>AnyCPU</PlatformTarget>
+		<PlatformTarget>x64</PlatformTarget>
 		<LangVersion>preview</LangVersion>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 		<DebugSymbols>true</DebugSymbols>
 		<DebugType>embedded</DebugType>
 		<Optimize>true</Optimize>
-		<TargetFramework>netstandard2.0</TargetFramework>
+		<TargetFramework>net6.0</TargetFramework>
 		<OutputPath>../bin/</OutputPath>
 		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-		<DefineConstants>NETSTANDARD2_0</DefineConstants>
+		<DefineConstants>IL2CPP</DefineConstants>
+		<Nullable>disable</Nullable>
 	</PropertyGroup>
 
 	<ItemGroup>

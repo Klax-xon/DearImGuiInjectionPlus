@@ -4,23 +4,23 @@
 		<OutputType>Library</OutputType>
 		<AssemblyName>DearImGuiInjectionPlus</AssemblyName>
 		<RootNamespace>DearImGuiInjectionPlus</RootNamespace>
-		<PlatformTarget>AnyCPU</PlatformTarget>
+		<PlatformTarget>x64</PlatformTarget>
 		<LangVersion>preview</LangVersion>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 		<DebugSymbols>true</DebugSymbols>
 		<DebugType>embedded</DebugType>
 		<Optimize>true</Optimize>
 		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
-		<TargetFramework>netstandard2.0</TargetFramework>
+		<TargetFramework>net6.0</TargetFramework>
 		<OutputPath>../bin/</OutputPath>
 		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-		<DefineConstants>NETSTANDARD2_0</DefineConstants>
+		<DefineConstants>IL2CPP</DefineConstants>
+		<Nullable>disable</Nullable>
 	</PropertyGroup>
 
 	<ItemGroup>
 		<PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.0.0" />
-		<PackageReference Include="BepInEx.Core" Version="5.4.21" />
-		<PackageReference Include="MonoMod.RuntimeDetour" Version="22.5.1.1" />
+		<PackageReference Include="BepInEx.Unity.IL2CPP" Version="6.0.0-be.790" />
 	</ItemGroup>
 
 	<ItemGroup>
@@ -28,12 +28,32 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<Reference Include="Il2Cppmscorlib">
+			<HintPath>..\libs\net6\Il2Cppmscorlib.dll</HintPath>
+			<Private>False</Private>
+		</Reference>
 		<Reference Include="UnityEngine">
-			<HintPath>..\libs\net35\UnityEngine.dll</HintPath>
+			<HintPath>..\libs\net6\UnityEngine.dll</HintPath>
+			<Private>False</Private>
+		</Reference>
+		<Reference Include="UnityEngine.CoreModule">
+			<HintPath>..\libs\net6\UnityEngine.CoreModule.dll</HintPath>
 			<Private>False</Private>
 		</Reference>
 		<Reference Include="UnityEngine.UI">
-			<HintPath>..\libs\net35\UnityEngine.UI.dll</HintPath>
+			<HintPath>..\libs\net6\UnityEngine.UI.dll</HintPath>
+			<Private>False</Private>
+		</Reference>
+		<Reference Include="UnityEngine.UIModule">
+			<HintPath>..\libs\net6\UnityEngine.UIModule.dll</HintPath>
+			<Private>False</Private>
+		</Reference>
+		<Reference Include="UnityEngine.IMGUIModule">
+			<HintPath>..\libs\net6\UnityEngine.IMGUIModule.dll</HintPath>
+			<Private>False</Private>
+		</Reference>
+		<Reference Include="UnityEngine.InputLegacyModule">
+			<HintPath>..\libs\net6\UnityEngine.InputLegacyModule.dll</HintPath>
 			<Private>False</Private>
 		</Reference>
 		<Reference Include="ImGui.NET">
