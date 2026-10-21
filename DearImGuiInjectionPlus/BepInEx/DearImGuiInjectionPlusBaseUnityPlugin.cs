@@ -1,33 +1,35 @@
 using System;
 using System.IO;
-using System.Linq;
 using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
+using BepInEx.Unity.IL2CPP;
 using DearImGuiInjectionPlus.Patches;
 using DearImGuiInjectionPlus.Windows;
 using HarmonyLib;
-using MonoMod.RuntimeDetour;
+using Il2CppInterop.Runtime.Injection;
 using RendererFinder;
 using RendererFinder.Renderers;
 using UnityEngine;
+using PluginLog = DearImGuiInjectionPlus.Log;
 
 namespace DearImGuiInjectionPlus.BepInEx;
 
 [BepInPlugin(Metadata.GUID, Metadata.Name, Metadata.Version)]
-public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
+public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
 {
-    private Hook _eventSystemUpdateHook;
-    private Harmony _harmony;
+    private static Harmony _harmony;
+    private static GameObject _runnerGo;
+    private static ConfigEntry<bool> _blockAllInputsConfig;
     private ConfigFile _customConfigFile;
 
-    private void Awake()
+    public override void Load()
     {
-        Log.Init(new BepInExLog(Logger));
-        Log.Info($"[DearImGuiInjectionPlus] Starting plugin bootstrap v{Metadata.Version} by {Metadata.Author}");
+        PluginLog.Init(new BepInExLog(base.Log));
+        PluginLog.Info($"[DearImGuiInjectionPlus] Starting plugin bootstrap v{Metadata.Version} by {Metadata.Author}");
 
         var deviceType = SystemInfo.graphicsDeviceType;
-        Log.Info($"[DearImGuiInjectionPlus] Unity Engine Graphics Backend: {deviceType}");
+        PluginLog.Info($"[DearImGuiInjectionPlus] Unity Engine Graphics Backend: {deviceType}");
         if (deviceType == UnityEngine.Rendering.GraphicsDeviceType.Direct3D11)
         {
             RendererFinder.RendererFinder.TargetRendererKind = RendererKind.D3D11;
@@ -38,15 +40,23 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
         }
         else
         {
-            Log.Error($"[DearImGuiInjectionPlus] Unsupported graphics backend: {deviceType}. Aborting initialization.");
+            PluginLog.Error($"[DearImGuiInjectionPlus] Unsupported graphics backend: {deviceType}. Aborting initialization.");
             return;
         }
 
-        PreloadNativeLibraries();
+        var pluginInfo = IL2CPPChainloader.Instance?.Plugins != null && IL2CPPChainloader.Instance.Plugins.TryGetValue(Metadata.GUID, out var info)
+            ? info
+            : null;
+        var metadata = pluginInfo?.Metadata ?? new BepInPlugin(Metadata.GUID, Metadata.Name, Metadata.Version);
+        var pluginDir = pluginInfo?.Location != null
+            ? Path.GetDirectoryName(pluginInfo.Location)
+            : Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+
+        PreloadNativeLibraries(pluginDir);
 
         // Ensure config is strictly saved to DearImGuiInjectionPlus.cfg
         var configFilePath = Path.Combine(Paths.ConfigPath, "DearImGuiInjectionPlus.cfg");
-        _customConfigFile = new ConfigFile(configFilePath, true, Info.Metadata);
+        _customConfigFile = new ConfigFile(configFilePath, true, metadata);
 
         var cursorVisibilityConfig = new BepInExConfigEntry<VirtualKey>(
             _customConfigFile.Bind(
@@ -55,24 +65,16 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
                 DearImGuiInjectionPlus.CursorVisibilityToggleDefault,
                 "Key for switching the Dear ImGui cursor and menu visibility."));
 
-        var blockAllInputsConfig = _customConfigFile.Bind(
+        _blockAllInputsConfig = _customConfigFile.Bind(
             "InputBlocking",
             "BlockAllInputsWhenOpen",
             true,
             "Whether all game mouse clicks and keyboard inputs are swallowed while the menu is open.");
 
-        DearImGuiInjectionPlus.BlockAllInputsWhenOpen = blockAllInputsConfig.Value;
+        DearImGuiInjectionPlus.BlockAllInputsWhenOpen = _blockAllInputsConfig.Value;
+        _blockAllInputsConfig.SettingChanged += OnBlockAllInputsSettingChanged;
 
-        blockAllInputsConfig.SettingChanged += (_, _) =>
-        {
-            DearImGuiInjectionPlus.BlockAllInputsWhenOpen = blockAllInputsConfig.Value;
-            if (!DearImGuiInjectionPlus.BlockAllInputsWhenOpen)
-            {
-                NewInputSystemBlocker.RestoreDevicesIfNeeded();
-            }
-        };
-
-        var assetsFolder = Path.Combine(Path.GetDirectoryName(Info.Location), "Assets");
+        var assetsFolder = Path.Combine(pluginDir, "Assets");
         if (!Directory.Exists(assetsFolder))
         {
             var fallback = Path.Combine(Paths.PluginPath, "DearImGuiInjectionPlus", "Assets");
@@ -88,25 +90,44 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
         {
             _harmony = new Harmony(Metadata.GUID);
             _harmony.PatchAll(Assembly.GetExecutingAssembly());
-            Log.Info("[DearImGuiInjectionPlus] Successfully applied Harmony patches for cursor management.");
+            PluginLog.Info("[DearImGuiInjectionPlus] Successfully applied Harmony patches for cursor management.");
         }
         catch (Exception ex)
         {
-            Log.Error($"[DearImGuiInjectionPlus] Failed to apply Harmony patches: {ex}");
+            PluginLog.Error($"[DearImGuiInjectionPlus] Failed to apply Harmony patches: {ex}");
         }
 
-        SetupIgnoreUIObjectsWhenImGuiCursorIsVisible();
+        // Register internal MonoBehaviour types prior to adding components
+        ClassInjector.RegisterTypeInIl2Cpp<UnityMainThreadDispatcher>();
+        ClassInjector.RegisterTypeInIl2Cpp<DearImGuiInjectionPlusRunner>();
 
-        gameObject.AddComponent<UnityMainThreadDispatcher>();
+        // Spawn a dedicated GameObject marked with Object.DontDestroyOnLoad to host frame tick operations
+        _runnerGo = new GameObject("DearImGuiInjectionPlus_Runner");
+        _runnerGo.hideFlags = HideFlags.HideAndDontSave;
+        UnityEngine.Object.DontDestroyOnLoad(_runnerGo);
 
-        Log.Info("[DearImGuiInjectionPlus] Bootstrap complete.");
+        _runnerGo.AddComponent<UnityMainThreadDispatcher>();
+        _runnerGo.AddComponent<DearImGuiInjectionPlusRunner>();
+
+        PluginLog.Info("[DearImGuiInjectionPlus] Bootstrap complete.");
     }
 
-    private void PreloadNativeLibraries()
+    private static void OnBlockAllInputsSettingChanged(object sender, EventArgs args)
+    {
+        if (_blockAllInputsConfig == null)
+            return;
+
+        DearImGuiInjectionPlus.BlockAllInputsWhenOpen = _blockAllInputsConfig.Value;
+        if (!DearImGuiInjectionPlus.BlockAllInputsWhenOpen)
+        {
+            NewInputSystemBlocker.RestoreDevicesIfNeeded();
+        }
+    }
+
+    private void PreloadNativeLibraries(string pluginDir)
     {
         try
         {
-            var pluginDir = Path.GetDirectoryName(Info.Location);
             var searchPaths = new[]
             {
                 Path.Combine(pluginDir, "cimgui.dll"),
@@ -123,7 +144,7 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
                     var handle = Kernel32.LoadLibrary(path);
                     if (handle != IntPtr.Zero)
                     {
-                        Log.Info($"[DearImGuiInjectionPlus] Preloaded native cimgui.dll from: {path}");
+                        PluginLog.Info($"[DearImGuiInjectionPlus] Preloaded native cimgui.dll from: {path}");
                         return;
                     }
                 }
@@ -131,86 +152,22 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
         }
         catch (Exception ex)
         {
-            Log.Warning($"[DearImGuiInjectionPlus] PreloadNativeLibraries exception: {ex.Message}");
+            PluginLog.Warning($"[DearImGuiInjectionPlus] PreloadNativeLibraries exception: {ex.Message}");
         }
     }
 
-    private void SetupIgnoreUIObjectsWhenImGuiCursorIsVisible()
+    public override bool Unload()
     {
-        try
-        {
-            var allFlags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
-            var unityEngineUIDll = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(ass => ass.GetName().Name == "UnityEngine.UI");
-            if (unityEngineUIDll == null)
-            {
-                return;
-            }
-
-            var eventSystemType = unityEngineUIDll.GetType("UnityEngine.EventSystems.EventSystem");
-            if (eventSystemType == null)
-            {
-                return;
-            }
-
-            var eventSystemUpdate = eventSystemType.GetMethod("Update", allFlags);
-            if (eventSystemUpdate != null)
-            {
-                _eventSystemUpdateHook = new Hook(eventSystemUpdate, new Action<Action<object>, object>(IgnoreUIObjectsWhenImGuiCursorIsVisible));
-                Log.Info("[DearImGuiInjectionPlus] Successfully hooked UnityEngine.EventSystems.EventSystem.Update");
-            }
-        }
-        catch (Exception e)
-        {
-            Log.Warning($"[DearImGuiInjectionPlus] Could not hook EventSystem.Update (game might not use uGUI): {e.Message}");
-        }
+        Shutdown();
+        return true;
     }
 
-    private static void IgnoreUIObjectsWhenImGuiCursorIsVisible(Action<object> orig, object self)
+    internal static void Shutdown()
     {
-        // Drop uGUI raycasts and event updates whenever Dear ImGui cursor is active
-        if (DearImGuiInjectionPlus.IsCursorVisible && DearImGuiInjectionPlus.BlockAllInputsWhenOpen)
-        {
+        if (RendererFinder.RendererFinder.IsShuttingDown)
             return;
-        }
 
-        if (DearImGuiInjectionPlus.IsCursorVisible && DearImGuiInjectionPlus.Initialized && DearImGuiInjectionPlus.WantCaptureMouse)
-        {
-            return;
-        }
-
-        orig(self);
-    }
- 
-    private void Update()
-    {
-        if (DearImGuiInjectionPlus.IsCursorVisible && DearImGuiInjectionPlus.BlockAllInputsWhenOpen)
-        {
-            NewInputSystemBlocker.EnforceBlocked();
-        }
-        else
-        {
-            if (!DearImGuiInjectionPlus.IsCursorVisible)
-            {
-                UnityInputBlocker.LastMousePosition = Input.mousePosition;
-            }
-            NewInputSystemBlocker.RestoreDevicesIfNeeded();
-        }
-
-        if (DearImGuiInjectionPlus.IsCursorVisible)
-        {
-            InputManager.EnforceCursorStateOnMainThread();
-        }
-    }
-
-    private void LateUpdate()
-    {
-        // INP-09: Re-enforce cursor unlocked state and free clipping after game Update/LateUpdate loops run
-        InputManager.EnforceCursorStateOnMainThread();
-    }
-
-    private void OnDestroy()
-    {
-        Log.Info("[DearImGuiInjectionPlus] Engine shutdown initiated...");
+        PluginLog.Info("[DearImGuiInjectionPlus] Engine shutdown initiated...");
         RendererFinder.RendererFinder.IsShuttingDown = true;
 
         try
@@ -219,7 +176,7 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
         }
         catch (Exception ex)
         {
-            Log.Warning($"[DearImGuiInjectionPlus] Error unblocking NewInputSystem on shutdown: {ex.Message}");
+            PluginLog.Warning($"[DearImGuiInjectionPlus] Error unblocking NewInputSystem on shutdown: {ex.Message}");
         }
 
         try
@@ -229,17 +186,14 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
         }
         catch (Exception ex)
         {
-            Log.Warning($"[DearImGuiInjectionPlus] Error unpatching Harmony: {ex.Message}");
+            PluginLog.Warning($"[DearImGuiInjectionPlus] Error unpatching Harmony: {ex.Message}");
         }
-
-        _eventSystemUpdateHook?.Dispose();
-        _eventSystemUpdateHook = null;
 
         // LC-02 / TH-01: Invert teardown order for unmanaged safety
         // 1. Signal the frame gate to drain in-flight rendering frames
         if (!FrameGate.CloseAndDrain(1000))
         {
-            Log.Warning("[DearImGuiInjectionPlus] Teardown drain timed out; skipping destruction to avoid use-after-free crash.");
+            PluginLog.Warning("[DearImGuiInjectionPlus] Teardown drain timed out; skipping destruction to avoid use-after-free crash.");
             return;
         }
 
@@ -252,6 +206,20 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BaseUnityPlugin
         // 4. Wait for GPU idle & 5. Destroy graphics resources and ImGui context
         DearImGuiInjectionPlus.Dispose();
 
-        Log.Info("[DearImGuiInjectionPlus] Plugin shutdown completed safely.");
+        if (_runnerGo != null)
+        {
+            var go = _runnerGo;
+            _runnerGo = null;
+            try
+            {
+                UnityEngine.Object.Destroy(go);
+            }
+            catch
+            {
+                // Ignored during engine exit
+            }
+        }
+
+        PluginLog.Info("[DearImGuiInjectionPlus] Plugin shutdown completed safely.");
     }
 }

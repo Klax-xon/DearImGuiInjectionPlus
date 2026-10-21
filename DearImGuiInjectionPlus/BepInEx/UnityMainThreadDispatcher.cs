@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Threading;
+using Il2CppInterop.Runtime.Injection;
 using UnityEngine;
 
 namespace DearImGuiInjectionPlus.BepInEx;
@@ -24,8 +25,23 @@ public class UnityMainThreadDispatcher : MonoBehaviour
     private static readonly ConcurrentQueue<Action> _executionQueue = new();
     private static UnityMainThreadDispatcher _instance;
     private static int _mainThreadId = -1;
+    private static bool _registered;
 
     public const int MaxBatchPerFrame = 500;
+
+    public UnityMainThreadDispatcher(IntPtr handle) : base(handle) { }
+
+    /// <summary>
+    /// Registers the UnityMainThreadDispatcher type with the IL2CPP domain.
+    /// </summary>
+    public static void Register()
+    {
+        if (!_registered)
+        {
+            ClassInjector.RegisterTypeInIl2Cpp<UnityMainThreadDispatcher>();
+            _registered = true;
+        }
+    }
 
     /// <summary>
     /// Returns true if the current calling thread is the Unity main scripting thread.
@@ -36,7 +52,7 @@ public class UnityMainThreadDispatcher : MonoBehaviour
     {
         _instance = this;
         _mainThreadId = Thread.CurrentThread.ManagedThreadId;
-        DontDestroyOnLoad(gameObject);
+        UnityEngine.Object.DontDestroyOnLoad(gameObject);
     }
 
     private void OnDestroy()

@@ -1,11 +1,14 @@
 using System;
 using System.IO;
 using BepInEx;
+using BepInEx.Unity.IL2CPP;
 using DearImGuiInjectionPlus;
 using DearImGuiInjectionPlus.BepInEx;
+using Il2CppInterop.Runtime.Injection;
 using ImGuiNET;
 using TestPlugin.Panels;
 using UnityEngine;
+using PluginLog = TestPlugin.Log;
 
 namespace TestPlugin;
 
@@ -64,7 +67,7 @@ public class SampleModWindow : IImGuiWindow
                 {
                     var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
                     cube.name = "InjectedCube_" + DateTime.Now.Ticks;
-                    Log.Info($"[TestPlugin] Created game object on main thread: {cube.name}");
+                    PluginLog.Info($"[TestPlugin] Created game object on main thread: {cube.name}");
                 });
             }
         }
@@ -74,8 +77,10 @@ public class SampleModWindow : IImGuiWindow
 
 [BepInDependency(DearImGuiInjectionPlus.Metadata.GUID)]
 [BepInPlugin("com.custom.testplugin", "TestPlugin", "1.0.0")]
-public class TestPlugin : BaseUnityPlugin
+public class TestPlugin : BasePlugin
 {
+    public static TestPlugin Instance { get; private set; }
+
     // Snapshot pipeline for sample mod window
     private StateSnapshotPipeline<PlayerDataSnapshot> _playerSnapshotPipeline;
     private SampleModWindow _sampleModWindow;
@@ -92,10 +97,15 @@ public class TestPlugin : BaseUnityPlugin
     private IDisposable _testSuiteTabHandle;
     private IDisposable _sampleModTabHandle;
 
-    private void Awake()
+    private GameObject _runnerGo;
+    private TestPluginRunner _runner;
+    private bool _isTornDown;
+
+    public override void Load()
     {
-        Log.Init(new BepInExLog(Logger));
-        Log.Info("[TestPlugin] Awake: Initializing DearImGui In-Game Test Suite...");
+        Instance = this;
+        PluginLog.Init(new BepInExLog(base.Log));
+        PluginLog.Info("[TestPlugin] Load: Initializing DearImGui In-Game Test Suite...");
 
         // 1. Initialize sample mod
         _playerSnapshotPipeline = new StateSnapshotPipeline<PlayerDataSnapshot>();
@@ -114,12 +124,27 @@ public class TestPlugin : BaseUnityPlugin
             _faultPanel,
             _memoryPanel);
 
-        Log.Info("[TestPlugin] Test panels initialized successfully.");
+        PluginLog.Info("[TestPlugin] Test panels initialized successfully.");
+
+        // 3. Register windows and menu tabs
+        RegisterWindowsAndTabs();
+
+        // 4. Register and spawn TestPluginRunner MonoBehaviour
+        ClassInjector.RegisterTypeInIl2Cpp<TestPluginRunner>();
+
+        _runnerGo = new GameObject("TestPlugin_Runner");
+        _runnerGo.hideFlags = HideFlags.HideAndDontSave;
+        UnityEngine.Object.DontDestroyOnLoad(_runnerGo);
+
+        _runner = _runnerGo.AddComponent<TestPluginRunner>();
+        _runner.Initialize(_playerSnapshotPipeline);
+
+        PluginLog.Info("[TestPlugin] TestPlugin bootstrap completed.");
     }
 
-    private void OnEnable()
+    private void RegisterWindowsAndTabs()
     {
-        Log.Info("[TestPlugin] OnEnable: Registering test suite windows and menu tabs...");
+        PluginLog.Info("[TestPlugin] Registering test suite windows and menu tabs...");
 
         // 1. Register Legacy Overlay
         DearImGuiInjectionPlus.DearImGuiInjectionPlus.Render += RenderLegacyOverlay;
@@ -146,9 +171,19 @@ public class TestPlugin : BaseUnityPlugin
         _testSuiteTabHandle = DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterTab("DearImGui Test Suite", "Test Suite Navigation", RenderTestSuiteMenu);
     }
 
-    private void OnDisable()
+    public override bool Unload()
     {
-        Log.Info("[TestPlugin] OnDisable: Unregistering all test suite windows and tabs...");
+        Teardown();
+        return true;
+    }
+
+    public void Teardown()
+    {
+        if (_isTornDown)
+            return;
+        _isTornDown = true;
+
+        PluginLog.Info("[TestPlugin] Performing clean teardown and persisting timestamp...");
 
         // 1. Unregister Legacy Overlay
         DearImGuiInjectionPlus.DearImGuiInjectionPlus.Render -= RenderLegacyOverlay;
@@ -172,16 +207,8 @@ public class TestPlugin : BaseUnityPlugin
 
         // 5. Stop background concurrency worker
         _concurrencyPanel?.StopWorker();
-    }
 
-    private void OnDestroy()
-    {
-        Log.Info("[TestPlugin] OnDestroy: Performing clean teardown and persisting timestamp...");
-
-        // Ensure clean teardown if OnDisable was skipped
-        OnDisable();
-
-        // TM-10 Quiescent Teardown: Persist timestamp to disk and log completion
+        // 6. TM-10 Quiescent Teardown: Persist timestamp to disk and log completion
         try
         {
             string path = FaultRecoveryTestPanel.ShutdownTimestampPath;
@@ -192,25 +219,26 @@ public class TestPlugin : BaseUnityPlugin
             }
 
             File.WriteAllText(path, $"Teardown completed cleanly at {DateTime.UtcNow:o}");
-            Log.Info($"[TestPlugin] OnApplicationQuit / OnDestroy save completed (Timestamp: {path})");
+            PluginLog.Info($"[TestPlugin] OnApplicationQuit / Teardown save completed (Timestamp: {path})");
         }
         catch (Exception ex)
         {
-            Log.Error($"[TestPlugin] Error writing teardown timestamp: {ex.Message}");
+            PluginLog.Error($"[TestPlugin] Error writing teardown timestamp: {ex.Message}");
         }
-    }
 
-    private void Update()
-    {
-        // Unity Main Thread publishes state snapshots at game framerate
-        var snapshot = new PlayerDataSnapshot
+        if (_runnerGo != null)
         {
-            Position = transform.position,
-            Health = 100f,
-            MaxHealth = 100f,
-            CurrentScene = gameObject.scene.name ?? "SampleScene"
-        };
-        _playerSnapshotPipeline.Publish(snapshot);
+            var go = _runnerGo;
+            _runnerGo = null;
+            try
+            {
+                UnityEngine.Object.Destroy(go);
+            }
+            catch
+            {
+                // Ignored during engine exit
+            }
+        }
     }
 
     private void RenderLegacyOverlay()
