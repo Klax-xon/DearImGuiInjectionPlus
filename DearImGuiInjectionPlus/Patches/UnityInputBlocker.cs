@@ -50,6 +50,25 @@ namespace DearImGuiInjectionPlus.Patches
         private static readonly List<Delegate> _pinnedDelegates = new();
         private static readonly HashSet<IntPtr> _hookedICallAddresses = new();
 
+        public static bool IsAddressAlreadyHooked(IntPtr functionPointer)
+        {
+            return functionPointer != IntPtr.Zero && _hookedICallAddresses.Contains(functionPointer);
+        }
+
+        public static bool IsKeyIntHooked => _origGetKeyInt != null;
+        public static bool IsKeyDownIntHooked => _origGetKeyDownInt != null;
+        public static bool IsKeyUpIntHooked => _origGetKeyUpInt != null;
+        public static bool IsMouseButtonHooked => _origGetMouseButton != null;
+        public static bool IsMouseButtonDownHooked => _origGetMouseButtonDown != null;
+        public static bool IsMouseButtonUpHooked => _origGetMouseButtonUp != null;
+        public static bool IsAnyKeyHooked => _origGetAnyKey != null;
+        public static bool IsAnyKeyDownHooked => _origGetAnyKeyDown != null;
+        public static bool IsMousePositionInjectedHooked => _origGetMousePositionInjected != null;
+        public static bool IsMouseScrollDeltaInjectedHooked => _origGetMouseScrollDeltaInjected != null;
+        public static bool IsMousePositionDeltaInjectedHooked => _origGetMousePositionDeltaInjected != null;
+        public static bool IsCursorLockStateHooked => _origSetCursorLockState != null;
+        public static bool IsCursorVisibleHooked => _origSetCursorVisible != null;
+
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate byte d_IntToBool(int arg0);
 
@@ -304,8 +323,22 @@ namespace DearImGuiInjectionPlus.Patches
             ref int skipped) where TDelegate : Delegate
         {
             originalTrampoline = null;
+            if (detourDelegate == null)
+            {
+                skipped++;
+                Log.Debug($"[DearImGuiInjectionPlus] Skipped native ICall hook: {icallWithoutArgs ?? icallWithArgs} (detour delegate is null)");
+                return;
+            }
+
             try
             {
+                if (Il2CppInteropRuntime.Instance?.DetourProvider == null)
+                {
+                    skipped++;
+                    Log.Warning($"[UnityInputBlocker] DetourProvider unavailable for native ICall hook: {icallWithoutArgs ?? icallWithArgs}");
+                    return;
+                }
+
                 IntPtr ptr = IL2CPP.il2cpp_resolve_icall(icallWithArgs);
                 if (ptr == IntPtr.Zero && !string.IsNullOrEmpty(icallWithoutArgs))
                 {
@@ -330,7 +363,7 @@ namespace DearImGuiInjectionPlus.Patches
             catch (Exception ex)
             {
                 skipped++;
-                Log.Warning($"[UnityInputBlocker] Skipped native ICall hook {icallWithoutArgs ?? icallWithArgs}: {ex.Message}");
+                Log.Warning($"[UnityInputBlocker] Graceful fallback: failed to hook native ICall {icallWithoutArgs ?? icallWithArgs}: {ex.Message}");
             }
         }
 
@@ -366,26 +399,26 @@ namespace DearImGuiInjectionPlus.Patches
                         method = typeof(UnityInputBlocker).GetMethod(nameof(BlockButton), AllStatic)
                     };
 
-                    TryPatchGeneratedMethod(harmony, unsafeUtilType.GetMethod("GetAxis", AllStatic, null, new[] { typeof(string) }, null),
+                    TryPatchGeneratedMethod(harmony, FindMethodSafely(unsafeUtilType, "GetAxis", AllStatic, new[] { typeof(string) }),
                         blockAxisPrefix, ref applied, ref skipped);
-                    TryPatchGeneratedMethod(harmony, unsafeUtilType.GetMethod("GetAxisRaw", AllStatic, null, new[] { typeof(string) }, null),
+                    TryPatchGeneratedMethod(harmony, FindMethodSafely(unsafeUtilType, "GetAxisRaw", AllStatic, new[] { typeof(string) }),
                         blockAxisPrefix, ref applied, ref skipped);
-                    TryPatchGeneratedMethod(harmony, unsafeUtilType.GetMethod("GetButton", AllStatic, null, new[] { typeof(string) }, null),
+                    TryPatchGeneratedMethod(harmony, FindMethodSafely(unsafeUtilType, "GetButton", AllStatic, new[] { typeof(string) }),
                         blockButtonPrefix, ref applied, ref skipped);
-                    TryPatchGeneratedMethod(harmony, unsafeUtilType.GetMethod("GetButtonDown", AllStatic, null, new[] { typeof(string) }, null),
+                    TryPatchGeneratedMethod(harmony, FindMethodSafely(unsafeUtilType, "GetButtonDown", AllStatic, new[] { typeof(string) }),
                         blockButtonPrefix, ref applied, ref skipped);
-                    TryPatchGeneratedMethod(harmony, unsafeUtilType.GetMethod("GetButtonUp", AllStatic, null, new[] { typeof(string) }, null),
+                    TryPatchGeneratedMethod(harmony, FindMethodSafely(unsafeUtilType, "GetButtonUp", AllStatic, new[] { typeof(string) }),
                         blockButtonPrefix, ref applied, ref skipped);
 
-                    TryPatchGeneratedMethod(harmony, unsafeUtilType.GetMethod("GetAxis_Injected", AllStatic),
+                    TryPatchGeneratedMethod(harmony, FindMethodSafely(unsafeUtilType, "GetAxis_Injected", AllStatic),
                         blockAxisPrefix, ref applied, ref skipped);
-                    TryPatchGeneratedMethod(harmony, unsafeUtilType.GetMethod("GetAxisRaw_Injected", AllStatic),
+                    TryPatchGeneratedMethod(harmony, FindMethodSafely(unsafeUtilType, "GetAxisRaw_Injected", AllStatic),
                         blockAxisPrefix, ref applied, ref skipped);
-                    TryPatchGeneratedMethod(harmony, unsafeUtilType.GetMethod("GetButton_Injected", AllStatic),
+                    TryPatchGeneratedMethod(harmony, FindMethodSafely(unsafeUtilType, "GetButton_Injected", AllStatic),
                         blockButtonPrefix, ref applied, ref skipped);
-                    TryPatchGeneratedMethod(harmony, unsafeUtilType.GetMethod("GetButtonDown_Injected", AllStatic),
+                    TryPatchGeneratedMethod(harmony, FindMethodSafely(unsafeUtilType, "GetButtonDown_Injected", AllStatic),
                         blockButtonPrefix, ref applied, ref skipped);
-                    TryPatchGeneratedMethod(harmony, unsafeUtilType.GetMethod("GetButtonUp_Injected", AllStatic),
+                    TryPatchGeneratedMethod(harmony, FindMethodSafely(unsafeUtilType, "GetButtonUp_Injected", AllStatic),
                         blockButtonPrefix, ref applied, ref skipped);
                 }
 
@@ -394,7 +427,7 @@ namespace DearImGuiInjectionPlus.Patches
                 if (sendMouseEventsType != null)
                 {
                     RuntimeHelpers.RunClassConstructor(sendMouseEventsType.TypeHandle);
-                    var doSendMethod = sendMouseEventsType.GetMethod("DoSendMouseEvents", AllStatic);
+                    var doSendMethod = FindMethodSafely(sendMouseEventsType, "DoSendMouseEvents", AllStatic);
                     var blockSendMousePrefix = new HarmonyMethod
                     {
                         method = typeof(UnityInputBlocker).GetMethod(nameof(BlockSendMouseEvents), AllStatic)
@@ -411,6 +444,53 @@ namespace DearImGuiInjectionPlus.Patches
             InternalPatchesSkipped = skipped - startSkipped;
         }
 
+        private static MethodInfo FindMethodSafely(Type type, string name, BindingFlags flags, Type[] paramTypes = null)
+        {
+            if (type == null || string.IsNullOrEmpty(name))
+                return null;
+
+            try
+            {
+                if (paramTypes != null)
+                    return type.GetMethod(name, flags, null, paramTypes, null);
+                return type.GetMethod(name, flags);
+            }
+            catch (AmbiguousMatchException)
+            {
+                var methods = type.GetMethods(flags);
+                if (paramTypes != null)
+                {
+                    for (int i = 0; i < methods.Length; i++)
+                    {
+                        var m = methods[i];
+                        if (m.Name != name) continue;
+                        var pars = m.GetParameters();
+                        if (pars.Length != paramTypes.Length) continue;
+                        bool match = true;
+                        for (int j = 0; j < pars.Length; j++)
+                        {
+                            if (pars[j].ParameterType != paramTypes[j])
+                            {
+                                match = false;
+                                break;
+                            }
+                        }
+                        if (match) return m;
+                    }
+                }
+                for (int i = 0; i < methods.Length; i++)
+                {
+                    if (methods[i].Name == name) return methods[i];
+                }
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug($"[UnityInputBlocker] FindMethodSafely for {type.Name}.{name} exception: {ex.Message}");
+                return null;
+            }
+        }
+
         private static void TryPatchGeneratedMethod(
             Harmony harmony,
             MethodInfo targetMethod,
@@ -418,20 +498,61 @@ namespace DearImGuiInjectionPlus.Patches
             ref int applied,
             ref int skipped)
         {
-            if (targetMethod == null || prefix?.method == null)
+            if (harmony == null || targetMethod == null || prefix?.method == null)
             {
                 skipped++;
-                Log.Debug("[DearImGuiInjectionPlus] Skipped internal patch: target method or prefix was null");
+                Log.Debug("[DearImGuiInjectionPlus] Skipped internal patch: harmony, target method or prefix was null");
                 return;
             }
 
             try
             {
+                // Verify return type compatibility if prefix accesses __result
+                var prefixMethod = prefix.method;
+                var prefixParams = prefixMethod.GetParameters();
+                var targetParams = targetMethod.GetParameters();
+
+                for (int i = 0; i < prefixParams.Length; i++)
+                {
+                    var p = prefixParams[i];
+                    if (p.Name == "__result")
+                    {
+                        var expectedType = p.ParameterType.IsByRef
+                            ? p.ParameterType.GetElementType()
+                            : p.ParameterType;
+
+                        if (targetMethod.ReturnType != expectedType)
+                        {
+                            skipped++;
+                            Log.Debug($"[DearImGuiInjectionPlus] Skipped internal patch for {targetMethod.DeclaringType?.Name}.{targetMethod.Name}: return type mismatch (Target: {targetMethod.ReturnType.Name}, Prefix expects: {expectedType?.Name})");
+                            return;
+                        }
+                    }
+                    else if (p.Name != null && p.Name.StartsWith("__") && int.TryParse(p.Name.Substring(2), out int argIdx))
+                    {
+                        if (argIdx >= targetParams.Length)
+                        {
+                            skipped++;
+                            Log.Debug($"[DearImGuiInjectionPlus] Skipped internal patch for {targetMethod.DeclaringType?.Name}.{targetMethod.Name}: parameter {p.Name} out of range (Target parameter count: {targetParams.Length})");
+                            return;
+                        }
+                    }
+                }
+
                 var nativePtrField = Il2CppInteropUtils.GetIl2CppMethodInfoPointerFieldForGeneratedMethod(targetMethod);
                 if (nativePtrField == null || (IntPtr)nativePtrField.GetValue(null) == IntPtr.Zero)
                 {
                     skipped++;
-                    Log.Debug($"[DearImGuiInjectionPlus] Skipped internal patch for {targetMethod.DeclaringType?.Name}.{targetMethod.Name} (NativeMethodInfoPtr is null/zero - stripped in IL2CPP)");
+                    Log.Debug($"[DearImGuiInjectionPlus] Skipped internal patch for {targetMethod.DeclaringType?.Name}.{targetMethod.Name} (NativeMethodInfoPtr is null/zero or field accessor - stripped in IL2CPP)");
+                    return;
+                }
+
+                IntPtr methodInfoPtr = (IntPtr)nativePtrField.GetValue(null);
+                IntPtr methodPointer = Marshal.ReadIntPtr(methodInfoPtr);
+                if (methodPointer != IntPtr.Zero && IsAddressAlreadyHooked(methodPointer))
+                {
+                    skipped++;
+                    Log.Info($"[DearImGuiInjectionPlus] Skipped internal patch for {targetMethod.DeclaringType?.Name}.{targetMethod.Name}: already intercepted by native ICall hook (0x{methodPointer.ToInt64():X})");
                     return;
                 }
 
@@ -442,7 +563,7 @@ namespace DearImGuiInjectionPlus.Patches
             catch (Exception ex)
             {
                 skipped++;
-                Log.Warning($"[UnityInputBlocker] Skipped internal detour for {targetMethod.DeclaringType?.Name}.{targetMethod.Name}: {ex.Message}");
+                Log.Warning($"[UnityInputBlocker] Graceful fallback: could not patch internal method {targetMethod.DeclaringType?.Name}.{targetMethod.Name}: {ex.Message}");
             }
         }
 
@@ -797,14 +918,9 @@ namespace DearImGuiInjectionPlus.Patches
         }
 
         // 2. Block key states (stops character movement scripts polling Input.GetKey & C++-inlined GetKeyInt)
-        [HarmonyPatch(typeof(Input), nameof(Input.GetKey), typeof(KeyCode))]
-        [HarmonyPatch(typeof(Input), nameof(Input.GetKeyDown), typeof(KeyCode))]
-        [HarmonyPatch(typeof(Input), nameof(Input.GetKeyUp), typeof(KeyCode))]
-        [HarmonyPatch(typeof(Input), "GetKeyInt", typeof(KeyCode))]
-        [HarmonyPatch(typeof(Input), "GetKeyDownInt", typeof(KeyCode))]
-        [HarmonyPatch(typeof(Input), "GetKeyUpInt", typeof(KeyCode))]
-        [HarmonyPrefix]
-        private static bool BlockKey(KeyCode __0, ref bool __result)
+        // Handled natively via Detour_GetKeyInt / Detour_GetKeyDownInt / Detour_GetKeyUpInt.
+        // Retained as internal helper for managed dynamic fallback if native ICall hook is unavailable.
+        internal static bool BlockKey(KeyCode __0, ref bool __result)
         {
             if (ShouldBlockKeyCode(__0))
             {
@@ -857,9 +973,8 @@ namespace DearImGuiInjectionPlus.Patches
             return true;
         }
 
-        [HarmonyPatch(typeof(Input), "get_mouseScrollDelta_Injected")]
-        [HarmonyPrefix]
-        private static bool BlockScrollDeltaInjected(ref Vector2 __0)
+        // Handled natively via Detour_GetMouseScrollDeltaInjected.
+        internal static bool BlockScrollDeltaInjected(ref Vector2 __0)
         {
             if (ShouldBlockMouse())
             {
@@ -870,11 +985,9 @@ namespace DearImGuiInjectionPlus.Patches
         }
 
         // 6. Block mouse button states (stops shooting / interacting polling Input.GetMouseButton)
-        [HarmonyPatch(typeof(Input), nameof(Input.GetMouseButton), typeof(int))]
-        [HarmonyPatch(typeof(Input), nameof(Input.GetMouseButtonDown), typeof(int))]
-        [HarmonyPatch(typeof(Input), nameof(Input.GetMouseButtonUp), typeof(int))]
-        [HarmonyPrefix]
-        private static bool BlockMouseButton(ref bool __result)
+        // Handled natively via Detour_GetMouseButton / Detour_GetMouseButtonDown / Detour_GetMouseButtonUp.
+        // Retained as internal helper for managed dynamic fallback if native ICall hook is unavailable.
+        internal static bool BlockMouseButton(ref bool __result)
         {
             if (ShouldBlockMouse())
             {
@@ -886,10 +999,9 @@ namespace DearImGuiInjectionPlus.Patches
         }
 
         // 7. Block general key flags
-        [HarmonyPatch(typeof(Input), nameof(Input.anyKey), MethodType.Getter)]
-        [HarmonyPatch(typeof(Input), nameof(Input.anyKeyDown), MethodType.Getter)]
-        [HarmonyPrefix]
-        private static bool BlockAnyKey(ref bool __result)
+        // Handled natively via Detour_GetAnyKey / Detour_GetAnyKeyDown.
+        // Retained as internal helper for managed dynamic fallback if native ICall hook is unavailable.
+        internal static bool BlockAnyKey(ref bool __result)
         {
             if (ShouldBlockKeyboard() || ShouldBlockMouse())
             {
@@ -935,9 +1047,8 @@ namespace DearImGuiInjectionPlus.Patches
             }
         }
 
-        [HarmonyPatch(typeof(Input), "get_mousePosition_Injected")]
-        [HarmonyPrefix]
-        private static bool BlockMousePositionInjected(ref Vector3 __0)
+        // Handled natively via Detour_GetMousePositionInjected.
+        internal static bool BlockMousePositionInjected(ref Vector3 __0)
         {
             if (ShouldBlockMouse())
             {
@@ -947,9 +1058,7 @@ namespace DearImGuiInjectionPlus.Patches
             return true;
         }
 
-        [HarmonyPatch(typeof(Input), "get_mousePosition_Injected")]
-        [HarmonyPostfix]
-        private static void TrackMousePositionInjected(ref Vector3 __0)
+        internal static void TrackMousePositionInjected(ref Vector3 __0)
         {
             if (!DearImGuiInjectionPlus.IsCursorVisible)
             {
@@ -970,9 +1079,8 @@ namespace DearImGuiInjectionPlus.Patches
             return true;
         }
 
-        [HarmonyPatch(typeof(Input), "get_mousePositionDelta_Injected")]
-        [HarmonyPrefix]
-        private static bool BlockMousePositionDeltaInjected(ref Vector3 __0)
+        // Handled natively via Detour_GetMousePositionDeltaInjected.
+        internal static bool BlockMousePositionDeltaInjected(ref Vector3 __0)
         {
             if (ShouldBlockMouse())
             {

@@ -62,7 +62,15 @@ namespace DearImGuiInjectionPlus.Patches
             try
             {
                 RuntimeHelpers.RunClassConstructor(typeof(NativeInputSystem).TypeHandle);
+            }
+            catch (Exception ex)
+            {
+                Log.Debug($"[NewInputSystemBlocker] NativeInputSystem class constructor exception: {ex.Message}");
+            }
 
+            // 1. Hook UnityEngineInternal.Input.NativeInputSystem.NotifyUpdate
+            try
+            {
                 var notifyUpdateMethod = typeof(NativeInputSystem).GetMethod(
                     nameof(NativeInputSystem.NotifyUpdate),
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
@@ -70,7 +78,7 @@ namespace DearImGuiInjectionPlus.Patches
                 if (notifyUpdateMethod != null)
                 {
                     var ptrField = Il2CppInteropUtils.GetIl2CppMethodInfoPointerFieldForGeneratedMethod(notifyUpdateMethod);
-                    if (ptrField == null || (IntPtr)ptrField.GetValue(null) != IntPtr.Zero)
+                    if (ptrField != null && (IntPtr)ptrField.GetValue(null) != IntPtr.Zero)
                     {
                         var prefixInfo = typeof(NewInputSystemBlocker).GetMethod(
                             nameof(NotifyUpdatePrefix),
@@ -84,81 +92,136 @@ namespace DearImGuiInjectionPlus.Patches
                     else
                     {
                         skipped++;
+                        Log.Debug("[NewInputSystemBlocker] NativeInputSystem.NotifyUpdate has null/zero native method pointer (stripped in IL2CPP).");
                     }
                 }
                 else
                 {
                     skipped++;
+                    Log.Debug("[NewInputSystemBlocker] NativeInputSystem.NotifyUpdate method not found.");
                 }
+            }
+            catch (Exception ex)
+            {
+                skipped++;
+                Log.Warning($"[NewInputSystemBlocker] Error hooking NativeInputSystem.NotifyUpdate: {ex.Message}");
+            }
 
+            // 2. Hook UnityEngineInternal.Input.NativeInputSystem.NotifyDeviceDiscovered
+            try
+            {
                 var notifyDeviceMethod = typeof(NativeInputSystem).GetMethod(
                     nameof(NativeInputSystem.NotifyDeviceDiscovered),
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
 
                 if (notifyDeviceMethod != null)
                 {
-                    var devPrefix = typeof(NewInputSystemBlocker).GetMethod(
-                        nameof(NotifyDeviceDiscoveredPrefix),
-                        BindingFlags.NonPublic | BindingFlags.Static);
+                    var ptrField = Il2CppInteropUtils.GetIl2CppMethodInfoPointerFieldForGeneratedMethod(notifyDeviceMethod);
+                    if (ptrField != null && (IntPtr)ptrField.GetValue(null) != IntPtr.Zero)
+                    {
+                        var devPrefix = typeof(NewInputSystemBlocker).GetMethod(
+                            nameof(NotifyDeviceDiscoveredPrefix),
+                            BindingFlags.NonPublic | BindingFlags.Static);
 
-                    harmony.Patch(notifyDeviceMethod, prefix: new HarmonyMethod(devPrefix));
-                    applied++;
-                    Log.Info("[NewInputSystemBlocker] Hooked UnityEngineInternal.Input.NativeInputSystem.NotifyDeviceDiscovered.");
+                        harmony.Patch(notifyDeviceMethod, prefix: new HarmonyMethod(devPrefix));
+                        applied++;
+                        Log.Info("[NewInputSystemBlocker] Hooked UnityEngineInternal.Input.NativeInputSystem.NotifyDeviceDiscovered.");
+                    }
+                    else
+                    {
+                        skipped++;
+                        Log.Debug("[NewInputSystemBlocker] NativeInputSystem.NotifyDeviceDiscovered has null/zero native method pointer.");
+                    }
                 }
                 else
                 {
                     skipped++;
+                    Log.Debug("[NewInputSystemBlocker] NativeInputSystem.NotifyDeviceDiscovered method not found.");
                 }
+            }
+            catch (Exception ex)
+            {
+                skipped++;
+                Log.Warning($"[NewInputSystemBlocker] Error hooking NativeInputSystem.NotifyDeviceDiscovered: {ex.Message}");
+            }
 
+            // 3. Hook or Inspect UnityEngineInternal.Input.NativeInputSystem.set_onUpdate
+            try
+            {
                 var setOnUpdateMethod = typeof(NativeInputSystem).GetMethod(
                     "set_onUpdate",
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
 
                 if (setOnUpdateMethod != null)
                 {
-                    var setPrefix = typeof(NewInputSystemBlocker).GetMethod(
-                        nameof(SetOnUpdatePrefix),
-                        BindingFlags.NonPublic | BindingFlags.Static);
+                    // Inspect method via reflection to check for field accessor or parameter anomalies
+                    var nativePtrField = Il2CppInteropUtils.GetIl2CppMethodInfoPointerFieldForGeneratedMethod(setOnUpdateMethod);
+                    bool hasFieldPtr = typeof(NativeInputSystem).GetField("NativeFieldInfoPtr_onUpdate",
+                        BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public) != null;
+                    bool isFieldAccessor = nativePtrField == null || hasFieldPtr;
 
-                    harmony.Patch(setOnUpdateMethod, prefix: new HarmonyMethod(setPrefix));
-                    applied++;
-                    IsOnUpdateHooked = true;
-                    Log.Info("[NewInputSystemBlocker] Hooked UnityEngineInternal.Input.NativeInputSystem.set_onUpdate.");
+                    var parameters = setOnUpdateMethod.GetParameters();
+                    bool hasValueParam = parameters.Length == 1 &&
+                                         !string.IsNullOrEmpty(parameters[0].Name) &&
+                                         string.Equals(parameters[0].Name, "value", StringComparison.OrdinalIgnoreCase);
+
+                    if (isFieldAccessor || !hasValueParam)
+                    {
+                        skipped++;
+                        Log.Info("[NewInputSystemBlocker] NativeInputSystem.set_onUpdate is an internal IL2CPP field accessor without a standard parameter. Skipping Harmony patch; relying on NotifyUpdate hook and dynamic callback inspection.");
+                    }
+                    else
+                    {
+                        var setPrefix = typeof(NewInputSystemBlocker).GetMethod(
+                            nameof(SetOnUpdatePrefix),
+                            BindingFlags.NonPublic | BindingFlags.Static);
+
+                        harmony.Patch(setOnUpdateMethod, prefix: new HarmonyMethod(setPrefix));
+                        applied++;
+                        IsOnUpdateHooked = true;
+                        Log.Info("[NewInputSystemBlocker] Hooked UnityEngineInternal.Input.NativeInputSystem.set_onUpdate.");
+                    }
                 }
                 else
                 {
                     skipped++;
-                }
-
-                // Probe whether onUpdate delegate is currently active
-                try
-                {
-                    var current = NativeInputSystem.onUpdate;
-                    if (current != null)
-                    {
-                        IsOnUpdateHooked = true;
-                        Log.Info($"[NewInputSystemBlocker] Active NativeInputSystem.onUpdate callback found: {current.Pointer:X}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log.Debug($"[NewInputSystemBlocker] Could not inspect current onUpdate: {ex.Message}");
+                    Log.Debug("[NewInputSystemBlocker] NativeInputSystem.set_onUpdate method not found.");
                 }
             }
             catch (Exception ex)
             {
                 skipped++;
-                Log.Warning($"[NewInputSystemBlocker] Error hooking NativeInputSystem: {ex.Message}");
+                Log.Warning($"[NewInputSystemBlocker] Graceful fallback: set_onUpdate could not be patched ({ex.Message}). Relying on NotifyUpdate hook.");
             }
+
+            // 4. Probe whether onUpdate delegate is currently active
+            CheckActiveOnUpdateCallback();
         }
 
-        private static void SetOnUpdatePrefix(NativeUpdateCallback value)
+        internal static void CheckActiveOnUpdateCallback()
         {
             try
             {
-                if (value != null)
+                var current = NativeInputSystem.onUpdate;
+                if (current != null)
                 {
-                    Log.Info($"[NewInputSystemBlocker] NativeInputSystem.set_onUpdate registered delegate: {value.Pointer:X}");
+                    IsOnUpdateHooked = true;
+                    Log.Info($"[NewInputSystemBlocker] Active NativeInputSystem.onUpdate callback found: 0x{current.Pointer.ToInt64():X}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Debug($"[NewInputSystemBlocker] Could not inspect current onUpdate: {ex.Message}");
+            }
+        }
+
+        private static void SetOnUpdatePrefix(NativeUpdateCallback __0)
+        {
+            try
+            {
+                if (__0 != null)
+                {
+                    Log.Info($"[NewInputSystemBlocker] NativeInputSystem.set_onUpdate registered delegate: 0x{__0.Pointer.ToInt64():X}");
                     IsOnUpdateHooked = true;
                 }
             }
@@ -366,6 +429,11 @@ namespace DearImGuiInjectionPlus.Patches
 
                     _initialized = true;
                     Log.Info($"[NewInputSystemBlocker] Initialized Unity.InputSystem hooks (DisableDevice: {_disableDeviceMethod != null}, ResetDevice: {_resetDeviceMethod != null}).");
+
+                    if (!IsOnUpdateHooked)
+                    {
+                        CheckActiveOnUpdateCallback();
+                    }
                 }
             }
             catch (Exception ex)
@@ -632,6 +700,10 @@ namespace DearImGuiInjectionPlus.Patches
             if (!_initialized)
             {
                 EnsureInitialized();
+            }
+            if (!IsOnUpdateHooked)
+            {
+                CheckActiveOnUpdateCallback();
             }
             if (_inputSystemType == null) return;
             if (!DearImGuiInjectionPlus.IsCursorVisible || (!blockMouse && !blockKeyboard))

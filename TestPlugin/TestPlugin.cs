@@ -82,6 +82,7 @@ public class SampleModWindow : IImGuiWindow
 public class TestPlugin : BasePlugin
 {
     public static TestPlugin Instance { get; private set; }
+    public StateSnapshotPipeline<PlayerDataSnapshot> PlayerSnapshotPipeline => _playerSnapshotPipeline;
 
     // Snapshot pipeline for sample mod window
     private StateSnapshotPipeline<PlayerDataSnapshot> _playerSnapshotPipeline;
@@ -141,13 +142,39 @@ public class TestPlugin : BasePlugin
         }
 
         _runnerGo = new GameObject("TestPlugin_Runner");
-        _runnerGo.hideFlags = HideFlags.HideInHierarchy;
+        _runnerGo.hideFlags = HideFlags.HideAndDontSave;
         UnityEngine.Object.DontDestroyOnLoad(_runnerGo);
 
         _runner = _runnerGo.AddComponent<TestPluginRunner>();
-        _runner.Initialize(_playerSnapshotPipeline);
 
         PluginLog.Info("[TestPlugin] TestPlugin bootstrap completed.");
+    }
+
+    internal void EnsureRunnerAlive()
+    {
+        if (_isTornDown || TestPluginRunner._isQuitting)
+            return;
+
+        try
+        {
+            if (_runnerGo == null)
+            {
+                _runnerGo = new GameObject("TestPlugin_Runner");
+                _runnerGo.hideFlags = HideFlags.HideAndDontSave;
+                UnityEngine.Object.DontDestroyOnLoad(_runnerGo);
+
+                _runner = _runnerGo.AddComponent<TestPluginRunner>();
+                PluginLog.Info("[TestPlugin] Successfully respawned TestPlugin_Runner.");
+            }
+            else if (_runner == null)
+            {
+                _runner = _runnerGo.GetComponent<TestPluginRunner>() ?? _runnerGo.AddComponent<TestPluginRunner>();
+            }
+        }
+        catch (Exception ex)
+        {
+            PluginLog.Warning($"[TestPlugin] Failed to respawn runner: {ex.Message}");
+        }
     }
 
     private void RegisterWindowsAndTabs()
@@ -190,6 +217,13 @@ public class TestPlugin : BasePlugin
     {
         if (_isTornDown)
             return;
+
+        if (fromOnDestroy && !TestPluginRunner._isQuitting)
+        {
+            PluginLog.Warning("[TestPlugin] Teardown invoked from OnDestroy but application is not quitting. Ignoring premature teardown request.");
+            return;
+        }
+
         _isTornDown = true;
 
         PluginLog.Info("[TestPlugin] Performing clean teardown and persisting timestamp...");

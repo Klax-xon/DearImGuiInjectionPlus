@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Unity.IL2CPP;
@@ -98,9 +99,9 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
             ClassInjector.RegisterTypeInIl2Cpp<DearImGuiInjectionPlusRunner>();
         }
 
-        // Use HideInHierarchy + DontDestroyOnLoad so Unity still dispatches OnApplicationQuit / OnDestroy on engine exit (Fixes AUD-05)
+        // Use HideAndDontSave + DontDestroyOnLoad so Unity does not destroy the runner during preloader or scene transitions
         _runnerGo = new GameObject("DearImGuiInjectionPlus_Runner");
-        _runnerGo.hideFlags = HideFlags.HideInHierarchy;
+        _runnerGo.hideFlags = HideFlags.HideAndDontSave;
         UnityEngine.Object.DontDestroyOnLoad(_runnerGo);
 
         _runnerGo.AddComponent<UnityMainThreadDispatcher>();
@@ -159,6 +160,77 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
         }
     }
 
+    internal static void EnsureRunnerAlive()
+    {
+        if (RendererFinder.RendererFinder.IsShuttingDown || DearImGuiInjectionPlusRunner._isQuitting)
+            return;
+
+        try
+        {
+            if (_runnerGo == null)
+            {
+                _runnerGo = new GameObject("DearImGuiInjectionPlus_Runner");
+                _runnerGo.hideFlags = HideFlags.HideAndDontSave;
+                UnityEngine.Object.DontDestroyOnLoad(_runnerGo);
+
+                _runnerGo.AddComponent<UnityMainThreadDispatcher>();
+                _runnerGo.AddComponent<DearImGuiInjectionPlusRunner>();
+                PluginLog.Info("[DearImGuiInjectionPlus] Successfully respawned DearImGuiInjectionPlus_Runner.");
+            }
+            else
+            {
+                if (!_runnerGo.GetComponent<UnityMainThreadDispatcher>())
+                {
+                    _runnerGo.AddComponent<UnityMainThreadDispatcher>();
+                }
+                if (!_runnerGo.GetComponent<DearImGuiInjectionPlusRunner>())
+                {
+                    _runnerGo.AddComponent<DearImGuiInjectionPlusRunner>();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            PluginLog.Warning($"[DearImGuiInjectionPlus] Failed to respawn runner: {ex.Message}");
+        }
+    }
+
+    private static bool IsPatchSignatureCompatible(MethodBase targetMethod, MethodInfo patchMethod, out string reason)
+    {
+        reason = null;
+        if (targetMethod == null || patchMethod == null)
+        {
+            reason = "null method reference";
+            return false;
+        }
+
+        var targetParams = targetMethod.GetParameters();
+        var patchParams = patchMethod.GetParameters();
+
+        foreach (var p in patchParams)
+        {
+            if (p.Name == "__result" && targetMethod is MethodInfo mi)
+            {
+                var expectedType = p.ParameterType.IsByRef ? p.ParameterType.GetElementType() : p.ParameterType;
+                if (mi.ReturnType != expectedType)
+                {
+                    reason = $"Return type mismatch: Target returns {mi.ReturnType.Name}, patch expects {expectedType?.Name}";
+                    return false;
+                }
+            }
+            else if (p.Name != null && p.Name.StartsWith("__") && int.TryParse(p.Name.Substring(2), out int argIdx))
+            {
+                if (argIdx >= targetParams.Length)
+                {
+                    reason = $"Parameter index {argIdx} exceeds target parameter count {targetParams.Length}";
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
     private static string FormatMethodSignature(MethodBase mb)
     {
         if (mb == null) return "unknown";
@@ -175,12 +247,34 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
         return $"{typeName}.{mb.Name}({pars})";
     }
 
+    private static IntPtr GetNativeMethodPointer(MethodBase targetMethod)
+    {
+        if (targetMethod == null) return IntPtr.Zero;
+        try
+        {
+            var nativePtrField = Il2CppInteropUtils.GetIl2CppMethodInfoPointerFieldForGeneratedMethod(targetMethod);
+            if (nativePtrField == null) return IntPtr.Zero;
+            var methodInfoPtr = (IntPtr)nativePtrField.GetValue(null);
+            if (methodInfoPtr == IntPtr.Zero) return IntPtr.Zero;
+            return Marshal.ReadIntPtr(methodInfoPtr);
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
     private static void ApplyHarmonyPatchesSafely()
     {
         _harmony = new Harmony(Metadata.GUID);
         int applied = 0;
         int skipped = 0;
         const BindingFlags AllFlags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance;
+
+        // 1. Detour underlying UnityPlayer.dll ICalls FIRST before applying any Harmony patches.
+        // This ensures all native function pointers are resolved and registered so Harmony
+        // never attempts to create a double detour on the same native addresses.
+        UnityInputBlocker.ApplyNativeICallHooks(ref applied, ref skipped);
 
         foreach (var type in Assembly.GetExecutingAssembly().GetTypes())
         {
@@ -302,8 +396,34 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
                             continue;
                         }
 
-                        var prefix = method.GetCustomAttribute<HarmonyPrefix>() != null ? new HarmonyMethod { method = method } : null;
-                        var postfix = method.GetCustomAttribute<HarmonyPostfix>() != null ? new HarmonyMethod { method = method } : null;
+                        // INP-10: Never double-detour a method whose underlying native address was already hooked by an ICall hook
+                        var methodPointer = GetNativeMethodPointer(targetMethod);
+                        if (methodPointer != IntPtr.Zero && UnityInputBlocker.IsAddressAlreadyHooked(methodPointer))
+                        {
+                            skipped++;
+                            PluginLog.Info($"[DearImGuiInjectionPlus] Skipped Harmony patch for {FormatMethodSignature(targetMethod)}: native function (0x{methodPointer.ToInt64():X}) already intercepted by native ICall hook");
+                            continue;
+                        }
+
+                        var prefixMethod = method.GetCustomAttribute<HarmonyPrefix>() != null ? method : null;
+                        var postfixMethod = method.GetCustomAttribute<HarmonyPostfix>() != null ? method : null;
+
+                        if (prefixMethod != null && !IsPatchSignatureCompatible(targetMethod, prefixMethod, out var prefixError))
+                        {
+                            skipped++;
+                            PluginLog.Debug($"[DearImGuiInjectionPlus] Skipped: {FormatMethodSignature(targetMethod)} prefix incompatible: {prefixError}");
+                            continue;
+                        }
+
+                        if (postfixMethod != null && !IsPatchSignatureCompatible(targetMethod, postfixMethod, out var postfixError))
+                        {
+                            skipped++;
+                            PluginLog.Debug($"[DearImGuiInjectionPlus] Skipped: {FormatMethodSignature(targetMethod)} postfix incompatible: {postfixError}");
+                            continue;
+                        }
+
+                        var prefix = prefixMethod != null ? new HarmonyMethod { method = prefixMethod } : null;
+                        var postfix = postfixMethod != null ? new HarmonyMethod { method = postfixMethod } : null;
 
                         if (patchGroups.TryGetValue(targetMethod, out var existing))
                         {
@@ -338,19 +458,152 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
             }
         }
 
-        // Patch UnityEngine.Internal.InputUnsafeUtility (CallerCount: 57 for GetAxis, 47 for GetAxisRaw) & SendMouseEvents
+        // 2. Patch UnityEngine.Internal.InputUnsafeUtility (CallerCount: 57 for GetAxis, 47 for GetAxisRaw) & SendMouseEvents
+        // Note: Skips any methods whose native address was already intercepted by native ICall hooks
         UnityInputBlocker.ApplyInternalHarmonyPatches(_harmony, ref applied, ref skipped);
 
-        // Detour underlying UnityPlayer.dll ICalls directly to defeat C++ /O2 inlining of 1-line Input/Cursor wrappers
-        UnityInputBlocker.ApplyNativeICallHooks(ref applied, ref skipped);
+        // 3. Apply managed fallbacks for any inputs where native ICall resolution was unavailable
+        ApplyInputFallbacksIfNeeded(_harmony, ref applied, ref skipped);
 
-        // Also hook UnityEngineInternal.Input.NativeInputSystem.NotifyUpdate for New Input System raw event filtering
+        // 4. Also hook UnityEngineInternal.Input.NativeInputSystem.NotifyUpdate for New Input System raw event filtering
         NewInputSystemBlocker.ApplyNativeInputHook(_harmony, ref applied, ref skipped);
 
         HarmonyPatchesApplied = applied;
         HarmonyPatchesSkipped = skipped;
 
         PluginLog.Info($"[DearImGuiInjectionPlus] Harmony & native ICall patching complete ({applied} applied, {skipped} skipped).");
+    }
+
+    private static void ApplyInputFallbacksIfNeeded(Harmony harmony, ref int applied, ref int skipped)
+    {
+        const BindingFlags AllStatic = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+
+        // 1. Cursor.lockState fallback
+        if (!UnityInputBlocker.IsCursorLockStateHooked)
+        {
+            try
+            {
+                var lockProp = typeof(Cursor).GetProperty(nameof(Cursor.lockState), AllStatic);
+                var setLockMethod = lockProp?.GetSetMethod(true);
+                if (setLockMethod != null)
+                {
+                    var prefix = new HarmonyMethod(typeof(CursorLockStatePatch).GetMethod("Prefix", AllStatic));
+                    harmony.Patch(setLockMethod, prefix: prefix);
+                    applied++;
+                    PluginLog.Info("[DearImGuiInjectionPlus] Applied managed fallback Harmony patch: Cursor.lockState setter");
+                }
+            }
+            catch (Exception ex)
+            {
+                skipped++;
+                PluginLog.Warning($"[DearImGuiInjectionPlus] Failed to apply Cursor.lockState fallback: {ex.Message}");
+            }
+        }
+        else
+        {
+            PluginLog.Info("[DearImGuiInjectionPlus] Cursor.lockState intercepted via native ICall hook (Harmony patch not required).");
+        }
+
+        // 2. Cursor.visible fallback
+        if (!UnityInputBlocker.IsCursorVisibleHooked)
+        {
+            try
+            {
+                var visProp = typeof(Cursor).GetProperty(nameof(Cursor.visible), AllStatic);
+                var setVisMethod = visProp?.GetSetMethod(true);
+                if (setVisMethod != null)
+                {
+                    var prefix = new HarmonyMethod(typeof(CursorVisiblePatch).GetMethod("Prefix", AllStatic));
+                    harmony.Patch(setVisMethod, prefix: prefix);
+                    applied++;
+                    PluginLog.Info("[DearImGuiInjectionPlus] Applied managed fallback Harmony patch: Cursor.visible setter");
+                }
+            }
+            catch (Exception ex)
+            {
+                skipped++;
+                PluginLog.Warning($"[DearImGuiInjectionPlus] Failed to apply Cursor.visible fallback: {ex.Message}");
+            }
+        }
+        else
+        {
+            PluginLog.Info("[DearImGuiInjectionPlus] Cursor.visible intercepted via native ICall hook (Harmony patch not required).");
+        }
+
+        // 3. KeyCode fallback (if native ICall hook for GetKeyInt was unavailable)
+        if (!UnityInputBlocker.IsKeyIntHooked)
+        {
+            try
+            {
+                var blockKeyMethod = typeof(UnityInputBlocker).GetMethod("BlockKey", AllStatic);
+                var prefix = new HarmonyMethod(blockKeyMethod);
+                var getKeyMethod = typeof(Input).GetMethod(nameof(Input.GetKey), AllStatic, null, new[] { typeof(KeyCode) }, null);
+                var getKeyDownMethod = typeof(Input).GetMethod(nameof(Input.GetKeyDown), AllStatic, null, new[] { typeof(KeyCode) }, null);
+                var getKeyUpMethod = typeof(Input).GetMethod(nameof(Input.GetKeyUp), AllStatic, null, new[] { typeof(KeyCode) }, null);
+
+                if (getKeyMethod != null) { harmony.Patch(getKeyMethod, prefix: prefix); applied++; }
+                if (getKeyDownMethod != null) { harmony.Patch(getKeyDownMethod, prefix: prefix); applied++; }
+                if (getKeyUpMethod != null) { harmony.Patch(getKeyUpMethod, prefix: prefix); applied++; }
+                PluginLog.Info("[DearImGuiInjectionPlus] Applied managed fallback Harmony patches for Input.GetKey/Down/Up(KeyCode).");
+            }
+            catch (Exception ex)
+            {
+                skipped++;
+                PluginLog.Warning($"[DearImGuiInjectionPlus] Failed to apply KeyCode fallbacks: {ex.Message}");
+            }
+        }
+        else
+        {
+            PluginLog.Info("[DearImGuiInjectionPlus] KeyCode input polling intercepted via native ICall hooks (Harmony patches not required).");
+        }
+
+        // 4. MouseButton fallback (if native ICall hook for GetMouseButton was unavailable)
+        if (!UnityInputBlocker.IsMouseButtonHooked)
+        {
+            try
+            {
+                var blockMouseBtnMethod = typeof(UnityInputBlocker).GetMethod("BlockMouseButton", AllStatic);
+                var prefix = new HarmonyMethod(blockMouseBtnMethod);
+                var getMouseBtn = typeof(Input).GetMethod(nameof(Input.GetMouseButton), AllStatic, null, new[] { typeof(int) }, null);
+                var getMouseBtnDown = typeof(Input).GetMethod(nameof(Input.GetMouseButtonDown), AllStatic, null, new[] { typeof(int) }, null);
+                var getMouseBtnUp = typeof(Input).GetMethod(nameof(Input.GetMouseButtonUp), AllStatic, null, new[] { typeof(int) }, null);
+
+                if (getMouseBtn != null) { harmony.Patch(getMouseBtn, prefix: prefix); applied++; }
+                if (getMouseBtnDown != null) { harmony.Patch(getMouseBtnDown, prefix: prefix); applied++; }
+                if (getMouseBtnUp != null) { harmony.Patch(getMouseBtnUp, prefix: prefix); applied++; }
+                PluginLog.Info("[DearImGuiInjectionPlus] Applied managed fallback Harmony patches for Input.GetMouseButton*.");
+            }
+            catch (Exception ex)
+            {
+                skipped++;
+                PluginLog.Warning($"[DearImGuiInjectionPlus] Failed to apply MouseButton fallbacks: {ex.Message}");
+            }
+        }
+        else
+        {
+            PluginLog.Info("[DearImGuiInjectionPlus] Mouse button polling intercepted via native ICall hooks (Harmony patches not required).");
+        }
+
+        // 5. AnyKey fallback (if native ICall hook for anyKey was unavailable)
+        if (!UnityInputBlocker.IsAnyKeyHooked)
+        {
+            try
+            {
+                var blockAnyKeyMethod = typeof(UnityInputBlocker).GetMethod("BlockAnyKey", AllStatic);
+                var prefix = new HarmonyMethod(blockAnyKeyMethod);
+                var anyKeyProp = typeof(Input).GetProperty(nameof(Input.anyKey), AllStatic)?.GetGetMethod(true);
+                var anyKeyDownProp = typeof(Input).GetProperty(nameof(Input.anyKeyDown), AllStatic)?.GetGetMethod(true);
+
+                if (anyKeyProp != null) { harmony.Patch(anyKeyProp, prefix: prefix); applied++; }
+                if (anyKeyDownProp != null) { harmony.Patch(anyKeyDownProp, prefix: prefix); applied++; }
+                PluginLog.Info("[DearImGuiInjectionPlus] Applied managed fallback Harmony patches for Input.anyKey/anyKeyDown.");
+            }
+            catch (Exception ex)
+            {
+                skipped++;
+                PluginLog.Warning($"[DearImGuiInjectionPlus] Failed to apply anyKey fallbacks: {ex.Message}");
+            }
+        }
     }
 
     public override bool Unload()
@@ -363,6 +616,12 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
     {
         if (RendererFinder.RendererFinder.IsShuttingDown)
             return;
+
+        if (fromOnDestroy && !DearImGuiInjectionPlusRunner._isQuitting)
+        {
+            PluginLog.Warning("[DearImGuiInjectionPlus] Shutdown invoked from OnDestroy but application is not quitting. Ignoring premature shutdown request.");
+            return;
+        }
 
         PluginLog.Info("[DearImGuiInjectionPlus] Engine shutdown initiated...");
         RendererFinder.RendererFinder.IsShuttingDown = true;
