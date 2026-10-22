@@ -506,12 +506,17 @@ public static class DearImGuiInjectionPlus
         }
     }
 
-    internal static void ToggleCursor()
+    public static void SetCursorVisibility(bool visible)
     {
-        IsCursorVisible = !IsCursorVisible;
-        UpdateCursorVisibility();
-        InputManager.OnCursorVisibilityToggled(IsCursorVisible);
+        if (IsCursorVisible != visible)
+        {
+            IsCursorVisible = visible;
+            UpdateCursorVisibility();
+            InputManager.OnCursorVisibilityToggled(IsCursorVisible);
+        }
     }
+
+    internal static void ToggleCursor() => SetCursorVisibility(!IsCursorVisible);
 
     public static void ToggleCursorVisibility() => ToggleCursor();
 
