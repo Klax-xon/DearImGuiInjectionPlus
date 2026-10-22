@@ -31,7 +31,7 @@ public class ConcurrencyTestPanel : IImGuiWindow
 {
     public string Id => "dearimgui_test_concurrency";
     public string Title => "2. Concurrency & Lock-Free Pipelines";
-    public bool IsOpen { get; set; } = true;
+    public bool IsOpen { get; set; } = false;
 
     // StructSnapshotPipeline Stress State (TH-06)
     private readonly StructSnapshotPipeline<ConcurrencyTestPayload> _pipeline = new();
@@ -79,10 +79,10 @@ public class ConcurrencyTestPanel : IImGuiWindow
         ImGui.SetNextWindowSize(new Vector2(620, 680), ImGuiCond.FirstUseEver);
         if (ImGui.Begin(Title, ref open, ImGuiWindowFlags.MenuBar))
         {
-            IsOpen = open;
             DrawPanelContent();
         }
         ImGui.End();
+        IsOpen = open;
     }
 
     private int _lastConsumedFrame = -1;

@@ -19,6 +19,33 @@ namespace DearImGuiInjectionPlus.Patches
         internal static Vector3 LastMousePosition = Vector3.zero;
         private static bool _resetInputAxesSupported = true;
 
+        public static int NativeICallHooksApplied { get; internal set; }
+        public static int NativeICallHooksSkipped { get; internal set; }
+        public static int InternalPatchesApplied { get; internal set; }
+        public static int InternalPatchesSkipped { get; internal set; }
+
+        private static int _firstAxisLogged = 0;
+        private static int _firstMouseButtonLogged = 0;
+
+        public static bool HasInterceptedAxis => _firstAxisLogged != 0;
+        public static bool HasInterceptedMouseButton => _firstMouseButtonLogged != 0;
+
+        private static void LogFirstAxisIntercept()
+        {
+            if (System.Threading.Interlocked.CompareExchange(ref _firstAxisLogged, 1, 0) == 0)
+            {
+                Log.Info("[UnityInputBlocker] Intercepted active game poll for GetAxis while ImGui is capturing input.");
+            }
+        }
+
+        private static void LogFirstMouseButtonIntercept()
+        {
+            if (System.Threading.Interlocked.CompareExchange(ref _firstMouseButtonLogged, 1, 0) == 0)
+            {
+                Log.Info("[UnityInputBlocker] Intercepted active game poll for GetMouseButton while ImGui is capturing input.");
+            }
+        }
+
         private static readonly List<IDetour> _nativeDetours = new();
         private static readonly List<Delegate> _pinnedDelegates = new();
         private static readonly HashSet<IntPtr> _hookedICallAddresses = new();
@@ -161,6 +188,9 @@ namespace DearImGuiInjectionPlus.Patches
         // directly, bypassing HarmonyX's detour on the GameAssembly.dll wrapper.
         internal static unsafe void ApplyNativeICallHooks(ref int applied, ref int skipped)
         {
+            int startApplied = applied;
+            int startSkipped = skipped;
+
             // 1. Mouse Buttons (int -> bool)
             HookICall("UnityEngine.Input::GetMouseButton(System.Int32)", "UnityEngine.Input::GetMouseButton",
                 new d_IntToBool(Detour_GetMouseButton), out _origGetMouseButton, ref applied, ref skipped);
@@ -260,6 +290,9 @@ namespace DearImGuiInjectionPlus.Patches
                 new d_SetCursorLockState(Detour_SetCursorLockState), out _origSetCursorLockState, ref applied, ref skipped);
             HookICall("UnityEngine.Cursor::set_visible(System.Boolean)", "UnityEngine.Cursor::set_visible",
                 new d_SetCursorVisible(Detour_SetCursorVisible), out _origSetCursorVisible, ref applied, ref skipped);
+
+            NativeICallHooksApplied = applied - startApplied;
+            NativeICallHooksSkipped = skipped - startSkipped;
         }
 
         private static void HookICall<TDelegate>(
@@ -282,6 +315,7 @@ namespace DearImGuiInjectionPlus.Patches
                 if (ptr == IntPtr.Zero || !_hookedICallAddresses.Add(ptr))
                 {
                     skipped++;
+                    Log.Debug($"[DearImGuiInjectionPlus] Skipped native ICall hook: {icallWithoutArgs ?? icallWithArgs} (ICall resolution returned null or duplicate)");
                     return;
                 }
 
@@ -291,6 +325,7 @@ namespace DearImGuiInjectionPlus.Patches
                 originalTrampoline = detour.GenerateTrampoline<TDelegate>();
                 _nativeDetours.Add(detour);
                 applied++;
+                Log.Info($"[DearImGuiInjectionPlus] Applied native ICall hook: {icallWithoutArgs ?? icallWithArgs}");
             }
             catch (Exception ex)
             {
@@ -308,6 +343,8 @@ namespace DearImGuiInjectionPlus.Patches
         // SendMouseEvents.DoSendMouseEvents (3D Collider OnMouseDown/OnMouseOver raycasts).
         internal static void ApplyInternalHarmonyPatches(Harmony harmony, ref int applied, ref int skipped)
         {
+            int startApplied = applied;
+            int startSkipped = skipped;
             const BindingFlags AllStatic = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
 
             try
@@ -369,6 +406,9 @@ namespace DearImGuiInjectionPlus.Patches
             {
                 Log.Warning($"[UnityInputBlocker] Error applying internal InputLegacyModule patches: {ex.Message}");
             }
+
+            InternalPatchesApplied = applied - startApplied;
+            InternalPatchesSkipped = skipped - startSkipped;
         }
 
         private static void TryPatchGeneratedMethod(
@@ -381,6 +421,7 @@ namespace DearImGuiInjectionPlus.Patches
             if (targetMethod == null || prefix?.method == null)
             {
                 skipped++;
+                Log.Debug("[DearImGuiInjectionPlus] Skipped internal patch: target method or prefix was null");
                 return;
             }
 
@@ -390,11 +431,13 @@ namespace DearImGuiInjectionPlus.Patches
                 if (nativePtrField == null || (IntPtr)nativePtrField.GetValue(null) == IntPtr.Zero)
                 {
                     skipped++;
+                    Log.Debug($"[DearImGuiInjectionPlus] Skipped internal patch for {targetMethod.DeclaringType?.Name}.{targetMethod.Name} (NativeMethodInfoPtr is null/zero - stripped in IL2CPP)");
                     return;
                 }
 
                 harmony.Patch(targetMethod, prefix: prefix);
                 applied++;
+                Log.Info($"[DearImGuiInjectionPlus] Applied: {targetMethod.DeclaringType?.FullName}.{targetMethod.Name}");
             }
             catch (Exception ex)
             {
@@ -426,21 +469,30 @@ namespace DearImGuiInjectionPlus.Patches
         private static byte Detour_GetMouseButton(int button)
         {
             if (ShouldBlockMouse())
+            {
+                LogFirstMouseButtonIntercept();
                 return 0;
+            }
             return _origGetMouseButton != null ? _origGetMouseButton(button) : (byte)0;
         }
 
         private static byte Detour_GetMouseButtonDown(int button)
         {
             if (ShouldBlockMouse())
+            {
+                LogFirstMouseButtonIntercept();
                 return 0;
+            }
             return _origGetMouseButtonDown != null ? _origGetMouseButtonDown(button) : (byte)0;
         }
 
         private static byte Detour_GetMouseButtonUp(int button)
         {
             if (ShouldBlockMouse())
+            {
+                LogFirstMouseButtonIntercept();
                 return 0;
+            }
             return _origGetMouseButtonUp != null ? _origGetMouseButtonUp(button) : (byte)0;
         }
 
@@ -531,14 +583,20 @@ namespace DearImGuiInjectionPlus.Patches
         private static float Detour_GetAxisInjected(IntPtr axisNameSpan)
         {
             if (ShouldBlockMouse() || ShouldBlockKeyboard())
+            {
+                LogFirstAxisIntercept();
                 return 0f;
+            }
             return _origGetAxisInjected != null ? _origGetAxisInjected(axisNameSpan) : 0f;
         }
 
         private static float Detour_GetAxisRawInjected(IntPtr axisNameSpan)
         {
             if (ShouldBlockMouse() || ShouldBlockKeyboard())
+            {
+                LogFirstAxisIntercept();
                 return 0f;
+            }
             return _origGetAxisRawInjected != null ? _origGetAxisRawInjected(axisNameSpan) : 0f;
         }
 
@@ -587,14 +645,20 @@ namespace DearImGuiInjectionPlus.Patches
         private static float Detour_GetAxisUnmanaged(IntPtr ptr, int len)
         {
             if (ShouldBlockMouse() || ShouldBlockKeyboard())
+            {
+                LogFirstAxisIntercept();
                 return 0f;
+            }
             return _origGetAxisUnmanaged != null ? _origGetAxisUnmanaged(ptr, len) : 0f;
         }
 
         private static float Detour_GetAxisRawUnmanaged(IntPtr ptr, int len)
         {
             if (ShouldBlockMouse() || ShouldBlockKeyboard())
+            {
+                LogFirstAxisIntercept();
                 return 0f;
+            }
             return _origGetAxisRawUnmanaged != null ? _origGetAxisRawUnmanaged(ptr, len) : 0f;
         }
 
@@ -643,14 +707,20 @@ namespace DearImGuiInjectionPlus.Patches
         private static float Detour_LegacyGetAxis(IntPtr axisName)
         {
             if (ShouldBlockMouse() || ShouldBlockKeyboard())
+            {
+                LogFirstAxisIntercept();
                 return 0f;
+            }
             return _origLegacyGetAxis != null ? _origLegacyGetAxis(axisName) : 0f;
         }
 
         private static float Detour_LegacyGetAxisRaw(IntPtr axisName)
         {
             if (ShouldBlockMouse() || ShouldBlockKeyboard())
+            {
+                LogFirstAxisIntercept();
                 return 0f;
+            }
             return _origLegacyGetAxisRaw != null ? _origLegacyGetAxisRaw(axisName) : 0f;
         }
 
@@ -712,13 +782,14 @@ namespace DearImGuiInjectionPlus.Patches
         // =====================================================================
 
         // 1. Zero out mouse axes (stops camera scripts polling Input.GetAxis)
-        [HarmonyPatch(typeof(Input), nameof(Input.GetAxis))]
-        [HarmonyPatch(typeof(Input), nameof(Input.GetAxisRaw))]
+        [HarmonyPatch(typeof(Input), nameof(Input.GetAxis), typeof(string))]
+        [HarmonyPatch(typeof(Input), nameof(Input.GetAxisRaw), typeof(string))]
         [HarmonyPrefix]
         private static bool BlockAxis(ref float __result)
         {
             if (ShouldBlockMouse() || ShouldBlockKeyboard())
             {
+                LogFirstAxisIntercept();
                 __result = 0f;
                 return false;
             }
@@ -744,9 +815,9 @@ namespace DearImGuiInjectionPlus.Patches
         }
 
         // 3. Block GetButton (Fire1, Fire2, Jump, etc.)
-        [HarmonyPatch(typeof(Input), nameof(Input.GetButton))]
-        [HarmonyPatch(typeof(Input), nameof(Input.GetButtonDown))]
-        [HarmonyPatch(typeof(Input), nameof(Input.GetButtonUp))]
+        [HarmonyPatch(typeof(Input), nameof(Input.GetButton), typeof(string))]
+        [HarmonyPatch(typeof(Input), nameof(Input.GetButtonDown), typeof(string))]
+        [HarmonyPatch(typeof(Input), nameof(Input.GetButtonUp), typeof(string))]
         [HarmonyPrefix]
         private static bool BlockButton(ref bool __result)
         {
@@ -799,14 +870,15 @@ namespace DearImGuiInjectionPlus.Patches
         }
 
         // 6. Block mouse button states (stops shooting / interacting polling Input.GetMouseButton)
-        [HarmonyPatch(typeof(Input), nameof(Input.GetMouseButton))]
-        [HarmonyPatch(typeof(Input), nameof(Input.GetMouseButtonDown))]
-        [HarmonyPatch(typeof(Input), nameof(Input.GetMouseButtonUp))]
+        [HarmonyPatch(typeof(Input), nameof(Input.GetMouseButton), typeof(int))]
+        [HarmonyPatch(typeof(Input), nameof(Input.GetMouseButtonDown), typeof(int))]
+        [HarmonyPatch(typeof(Input), nameof(Input.GetMouseButtonUp), typeof(int))]
         [HarmonyPrefix]
         private static bool BlockMouseButton(ref bool __result)
         {
             if (ShouldBlockMouse())
             {
+                LogFirstMouseButtonIntercept();
                 __result = false;
                 return false;
             }

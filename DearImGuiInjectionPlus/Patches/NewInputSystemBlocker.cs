@@ -9,6 +9,7 @@ using HarmonyLib;
 using Il2CppInterop.Common;
 using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.InteropTypes;
+using UnityEngineInternal.Input;
 
 namespace DearImGuiInjectionPlus.Patches
 {
@@ -31,100 +32,152 @@ namespace DearImGuiInjectionPlus.Patches
         private static int _disableMethodParamCount;
         private static int _resetMethodParamCount;
         private static volatile int _mouseDeviceId = -1;
+        private static volatile int _pointerDeviceId = -1;
         private static volatile int _keyboardDeviceId = -1;
+        private static readonly HashSet<int> _mouseDeviceIds = new();
+        private static readonly HashSet<int> _keyboardDeviceIds = new();
         private static bool _initialized;
-        private static bool _hasSearched;
+        private static bool _hasLoggedInitialBlockDevices;
+        private static readonly List<string> _discoveredDevices = new();
+
+        private static int _notifyUpdateInterceptCount = 0;
+        private static int _onUpdateInterceptCount = 0;
+
+        public static bool IsNotifyUpdateHooked { get; internal set; }
+        public static bool IsOnUpdateHooked { get; internal set; }
+        public static int NotifyUpdateInterceptCount => _notifyUpdateInterceptCount;
+        public static int OnUpdateInterceptCount => _onUpdateInterceptCount;
+        public static int MouseDeviceIdsCount => _mouseDeviceIds.Count;
+        public static IReadOnlyCollection<int> MouseDeviceIds => _mouseDeviceIds;
+        public static int DisabledDevicesCount => _disabledDevices.Count;
+        public static IReadOnlyList<string> DiscoveredDevices => _discoveredDevices;
 
         // Keyed by native IL2CPP pointer (or RuntimeHelpers.GetHashCode fallback) to avoid Il2CppObjectBase wrapper identity churn
         private static readonly Dictionary<IntPtr, object> _disabledDevices = new();
         private static volatile bool _hasDisabledDevices;
         private static readonly object _lock = new();
 
-        private static Assembly ResolveInteropAssembly(params string[] assemblyNames)
-        {
-            var loaded = AppDomain.CurrentDomain.GetAssemblies();
-            foreach (var name in assemblyNames)
-            {
-                var match = loaded.FirstOrDefault(a => string.Equals(a.GetName().Name, name, StringComparison.OrdinalIgnoreCase));
-                if (match != null)
-                    return match;
-            }
-
-            try
-            {
-                string interopDir = Path.Combine(global::BepInEx.Paths.BepInExRootPath, "interop");
-                if (Directory.Exists(interopDir))
-                {
-                    foreach (var name in assemblyNames)
-                    {
-                        string candidate = Path.Combine(interopDir, name + ".dll");
-                        if (File.Exists(candidate))
-                        {
-                            return Assembly.LoadFrom(candidate);
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Warning($"[NewInputSystemBlocker] Failed probing interop assembly ({string.Join(", ", assemblyNames)}): {ex.Message}");
-            }
-
-            return null;
-        }
-
         public static void ApplyNativeInputHook(Harmony harmony, ref int applied, ref int skipped)
         {
             try
             {
-                var nativeInputType = Type.GetType("UnityEngineInternal.Input.NativeInputSystem, UnityEngine.InputModule")
-                                      ?? ResolveInteropAssembly("UnityEngine.InputModule", "Il2CppUnityEngine.InputModule")
-                                          ?.GetType("UnityEngineInternal.Input.NativeInputSystem");
+                RuntimeHelpers.RunClassConstructor(typeof(NativeInputSystem).TypeHandle);
 
-                if (nativeInputType == null)
-                {
-                    skipped++;
-                    return;
-                }
-
-                RuntimeHelpers.RunClassConstructor(nativeInputType.TypeHandle);
-
-                var notifyUpdateMethod = nativeInputType.GetMethod(
-                    "NotifyUpdate",
+                var notifyUpdateMethod = typeof(NativeInputSystem).GetMethod(
+                    nameof(NativeInputSystem.NotifyUpdate),
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
 
-                if (notifyUpdateMethod == null)
+                if (notifyUpdateMethod != null)
+                {
+                    var ptrField = Il2CppInteropUtils.GetIl2CppMethodInfoPointerFieldForGeneratedMethod(notifyUpdateMethod);
+                    if (ptrField == null || (IntPtr)ptrField.GetValue(null) != IntPtr.Zero)
+                    {
+                        var prefixInfo = typeof(NewInputSystemBlocker).GetMethod(
+                            nameof(NotifyUpdatePrefix),
+                            BindingFlags.NonPublic | BindingFlags.Static);
+
+                        harmony.Patch(notifyUpdateMethod, prefix: new HarmonyMethod(prefixInfo));
+                        applied++;
+                        IsNotifyUpdateHooked = true;
+                        Log.Info("[NewInputSystemBlocker] Hooked UnityEngineInternal.Input.NativeInputSystem.NotifyUpdate.");
+                    }
+                    else
+                    {
+                        skipped++;
+                    }
+                }
+                else
                 {
                     skipped++;
-                    return;
                 }
 
-                var ptrField = Il2CppInteropUtils.GetIl2CppMethodInfoPointerFieldForGeneratedMethod(notifyUpdateMethod);
-                if (ptrField != null && (IntPtr)ptrField.GetValue(null) == IntPtr.Zero)
+                var notifyDeviceMethod = typeof(NativeInputSystem).GetMethod(
+                    nameof(NativeInputSystem.NotifyDeviceDiscovered),
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+
+                if (notifyDeviceMethod != null)
+                {
+                    var devPrefix = typeof(NewInputSystemBlocker).GetMethod(
+                        nameof(NotifyDeviceDiscoveredPrefix),
+                        BindingFlags.NonPublic | BindingFlags.Static);
+
+                    harmony.Patch(notifyDeviceMethod, prefix: new HarmonyMethod(devPrefix));
+                    applied++;
+                    Log.Info("[NewInputSystemBlocker] Hooked UnityEngineInternal.Input.NativeInputSystem.NotifyDeviceDiscovered.");
+                }
+                else
                 {
                     skipped++;
-                    return;
                 }
 
-                var prefixInfo = typeof(NewInputSystemBlocker).GetMethod(
-                    nameof(NotifyUpdatePrefix),
-                    BindingFlags.NonPublic | BindingFlags.Static);
+                var setOnUpdateMethod = typeof(NativeInputSystem).GetMethod(
+                    "set_onUpdate",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
 
-                harmony.Patch(notifyUpdateMethod, prefix: new HarmonyMethod { method = prefixInfo });
-                applied++;
-                Log.Info("[NewInputSystemBlocker] Hooked UnityEngineInternal.Input.NativeInputSystem.NotifyUpdate.");
+                if (setOnUpdateMethod != null)
+                {
+                    var setPrefix = typeof(NewInputSystemBlocker).GetMethod(
+                        nameof(SetOnUpdatePrefix),
+                        BindingFlags.NonPublic | BindingFlags.Static);
+
+                    harmony.Patch(setOnUpdateMethod, prefix: new HarmonyMethod(setPrefix));
+                    applied++;
+                    IsOnUpdateHooked = true;
+                    Log.Info("[NewInputSystemBlocker] Hooked UnityEngineInternal.Input.NativeInputSystem.set_onUpdate.");
+                }
+                else
+                {
+                    skipped++;
+                }
+
+                // Probe whether onUpdate delegate is currently active
+                try
+                {
+                    var current = NativeInputSystem.onUpdate;
+                    if (current != null)
+                    {
+                        IsOnUpdateHooked = true;
+                        Log.Info($"[NewInputSystemBlocker] Active NativeInputSystem.onUpdate callback found: {current.Pointer:X}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Debug($"[NewInputSystemBlocker] Could not inspect current onUpdate: {ex.Message}");
+                }
             }
             catch (Exception ex)
             {
                 skipped++;
-                Log.Warning($"[NewInputSystemBlocker] Skipped NativeInputSystem.NotifyUpdate hook: {ex.Message}");
+                Log.Warning($"[NewInputSystemBlocker] Error hooking NativeInputSystem: {ex.Message}");
+            }
+        }
+
+        private static void SetOnUpdatePrefix(NativeUpdateCallback value)
+        {
+            try
+            {
+                if (value != null)
+                {
+                    Log.Info($"[NewInputSystemBlocker] NativeInputSystem.set_onUpdate registered delegate: {value.Pointer:X}");
+                    IsOnUpdateHooked = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[NewInputSystemBlocker] Error in SetOnUpdatePrefix: {ex.Message}");
             }
         }
 
         // Prefix for UnityEngineInternal.Input.NativeInputSystem.NotifyUpdate(NativeInputUpdateType updateType, IntPtr eventBuffer)
-        private static bool NotifyUpdatePrefix(IntPtr __1)
+        private static bool NotifyUpdatePrefix(NativeInputUpdateType updateType, IntPtr eventBuffer)
         {
-            if (__1 == IntPtr.Zero)
+            int count = System.Threading.Interlocked.Increment(ref _notifyUpdateInterceptCount);
+            if (count == 1)
+            {
+                Log.Info($"[NewInputSystemBlocker] First NotifyUpdate intercepted! updateType={updateType}, eventBuffer=0x{eventBuffer.ToInt64():X}");
+            }
+
+            if (eventBuffer == IntPtr.Zero)
                 return true;
 
             if (InputManager.HasPendingKeyReleaseFlush)
@@ -139,81 +192,135 @@ namespace DearImGuiInjectionPlus.Patches
             if (!blockMouse && !blockKeyboard)
                 return true;
 
-            try
+            if (blockMouse && blockKeyboard)
             {
-                // NativeInputEventBuffer layout:
-                // offset 0: void* eventBuffer (8 bytes on x64)
-                // offset 8: int eventCount (4 bytes)
-                // offset 12: int sizeInBytes (4 bytes)
-                // offset 16: int capacityInBytes (4 bytes)
-                if (blockMouse && blockKeyboard)
-                {
-                    Marshal.WriteInt32(__1, 8, 0);
-                    Marshal.WriteInt32(__1, 12, 0);
-                    return true;
-                }
-
-                // Selective swallowing: filter events in buffer by deviceId if known, or drop non-passthrough events
-                IntPtr bufferPtr = Marshal.ReadIntPtr(__1, 0);
-                int eventCount = Marshal.ReadInt32(__1, 8);
-                int totalSize = Marshal.ReadInt32(__1, 12);
-
-                if (bufferPtr == IntPtr.Zero || eventCount <= 0 || totalSize < 20)
-                    return true;
-
-                int kbId = _keyboardDeviceId;
-                int mouseId = _mouseDeviceId;
-
-                if (kbId <= 0 && mouseId <= 0)
-                {
-                    if (blockMouse)
-                    {
-                        Marshal.WriteInt32(__1, 8, 0);
-                        Marshal.WriteInt32(__1, 12, 0);
-                    }
-                    return true;
-                }
-
-                int offset = 0;
-                for (int i = 0; i < eventCount && offset + 20 <= totalSize; i++)
-                {
-                    IntPtr evPtr = bufferPtr + offset;
-                    int evSize = (ushort)Marshal.ReadInt16(evPtr, 4);
-                    if (evSize < 20)
-                        break;
-
-                    int deviceId = (ushort)Marshal.ReadInt16(evPtr, 6);
-                    bool isKeyboardEvent = kbId > 0 && deviceId == kbId;
-                    bool isMouseEvent = mouseId > 0 ? deviceId == mouseId : !isKeyboardEvent;
-
-                    if ((blockMouse && isMouseEvent) || (blockKeyboard && isKeyboardEvent))
-                    {
-                        // Zero out InputEvent.type FourCC so Unity's InputManager.OnUpdate skips this event
-                        Marshal.WriteInt32(evPtr, 0, 0);
-                    }
-
-                    offset += (evSize + 3) & ~3;
-                }
+                Marshal.WriteInt32(eventBuffer, 8, 0);  // eventCount = 0
+                Marshal.WriteInt32(eventBuffer, 12, 0); // sizeInBytes = 0
+                return false; // Skip original NotifyUpdate entirely!
             }
-            catch
+
+            unsafe
             {
-                // Never throw inside native input update callback
+                FilterEventBuffer((NativeInputEventBuffer*)eventBuffer, blockMouse, blockKeyboard);
+            }
+
+            if (Marshal.ReadInt32(eventBuffer, 8) <= 0)
+            {
+                return false; // All events swallowed, skip original!
             }
 
             return true;
         }
 
+        private static void NotifyDeviceDiscoveredPrefix(int deviceId, string deviceDescriptor)
+        {
+            try
+            {
+                Log.Info($"[NewInputSystemBlocker] Native device discovered: ID={deviceId}, Desc={deviceDescriptor}");
+                if (string.IsNullOrEmpty(deviceDescriptor)) return;
+                string lower = deviceDescriptor.ToLowerInvariant();
+                if (lower.Contains("mouse") || lower.Contains("pointer") || lower.Contains("cursor"))
+                {
+                    _mouseDeviceIds.Add(deviceId);
+                    _mouseDeviceId = deviceId;
+                    _pointerDeviceId = deviceId;
+                    Log.Info($"[NewInputSystemBlocker] Registered native pointer/mouse ID: {deviceId}");
+                }
+                else if (lower.Contains("keyboard") || lower.Contains("key"))
+                {
+                    _keyboardDeviceIds.Add(deviceId);
+                    _keyboardDeviceId = deviceId;
+                    Log.Info($"[NewInputSystemBlocker] Registered native keyboard ID: {deviceId}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[NewInputSystemBlocker] Error in NotifyDeviceDiscoveredPrefix: {ex.Message}");
+            }
+        }
+
+        private static unsafe void FilterEventBuffer(NativeInputEventBuffer* buffer, bool blockMouse, bool blockKeyboard)
+        {
+            if (buffer == null || buffer->eventBuffer == IntPtr.Zero || buffer->eventCount <= 0 || buffer->sizeInBytes < 20)
+                return;
+
+            byte* raw = (byte*)buffer->eventBuffer.ToPointer();
+            int totalSize = buffer->sizeInBytes;
+            int eventCount = buffer->eventCount;
+
+            int readOffset = 0;
+            int writeOffset = 0;
+            int keptCount = 0;
+
+            for (int i = 0; i < eventCount && readOffset + 20 <= totalSize; i++)
+            {
+                byte* evPtr = raw + readOffset;
+                ushort evSize = *(ushort*)(evPtr + 4);
+                if (evSize < 20 || readOffset + evSize > totalSize)
+                    break;
+
+                ushort deviceId = *(ushort*)(evPtr + 6);
+
+                bool isMouse = _mouseDeviceIds.Contains(deviceId) || deviceId == _mouseDeviceId || deviceId == _pointerDeviceId;
+                bool isKeyboard = _keyboardDeviceIds.Contains(deviceId) || deviceId == _keyboardDeviceId;
+
+                // Auto-discover device type from StateFormat FourCC at offset 20 if event is a State event
+                if (!isMouse && !isKeyboard && evSize >= 24)
+                {
+                    int stateFormat = *(int*)(evPtr + 20);
+                    // 'MOUS' = 0x4D4F5553, 'POIN' = 0x504F494E, 'TOUC' = 0x544F5543
+                    if (stateFormat is 0x4D4F5553 or 0x504F494E or 0x544F5543)
+                    {
+                        isMouse = true;
+                        _mouseDeviceIds.Add(deviceId);
+                    }
+                    // 'KEYB' = 0x4B455942
+                    else if (stateFormat == 0x4B455942)
+                    {
+                        isKeyboard = true;
+                        _keyboardDeviceIds.Add(deviceId);
+                    }
+                }
+
+                bool shouldDrop = false;
+                if (blockMouse && isMouse)
+                {
+                    shouldDrop = true;
+                }
+                else if (blockKeyboard && isKeyboard)
+                {
+                    shouldDrop = true;
+                }
+
+                int alignedSize = (evSize + 3) & ~3;
+
+                if (!shouldDrop)
+                {
+                    if (writeOffset != readOffset)
+                    {
+                        Buffer.MemoryCopy(evPtr, raw + writeOffset, totalSize - writeOffset, evSize);
+                    }
+                    writeOffset += alignedSize;
+                    keptCount++;
+                }
+
+                readOffset += alignedSize;
+            }
+
+            buffer->eventCount = keptCount;
+            buffer->sizeInBytes = writeOffset;
+        }
+
         public static void EnsureInitialized(bool force = false)
         {
-            if (_initialized || (_hasSearched && !force)) return;
-            _hasSearched = true;
+            if (_initialized) return;
 
             try
             {
-                _inputSystemType = Type.GetType("UnityEngine.InputSystem.InputSystem, Unity.InputSystem")
-                                   ?? Type.GetType("UnityEngine.InputSystem.InputSystem, Il2CppUnity.InputSystem")
-                                   ?? ResolveInteropAssembly("Unity.InputSystem", "Il2CppUnity.InputSystem")
-                                       ?.GetType("UnityEngine.InputSystem.InputSystem");
+                if (_inputSystemType == null)
+                {
+                    _inputSystemType = ResolveInputSystemAssembly()?.GetType("UnityEngine.InputSystem.InputSystem");
+                }
 
                 if (_inputSystemType != null)
                 {
@@ -267,6 +374,73 @@ namespace DearImGuiInjectionPlus.Patches
             }
         }
 
+        private static Assembly ResolveInputSystemAssembly()
+        {
+            // 1. Check already loaded assemblies
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                try
+                {
+                    if (asm.GetType("UnityEngine.InputSystem.InputSystem") != null)
+                    {
+                        Log.Info($"[NewInputSystemBlocker] Found InputSystem in loaded assembly: {asm.FullName}");
+                        return asm;
+                    }
+                }
+                catch { }
+            }
+
+            // 2. Probe BepInEx search directories
+            var searchDirs = new List<string>();
+            try
+            {
+                if (!string.IsNullOrEmpty(global::BepInEx.Paths.BepInExRootPath))
+                {
+                    searchDirs.Add(Path.Combine(global::BepInEx.Paths.BepInExRootPath, "interop"));
+                }
+                if (!string.IsNullOrEmpty(global::BepInEx.Paths.CachePath))
+                {
+                    searchDirs.Add(Path.Combine(global::BepInEx.Paths.CachePath, "interop"));
+                }
+                if (global::BepInEx.Paths.DllSearchPaths != null)
+                {
+                    searchDirs.AddRange(global::BepInEx.Paths.DllSearchPaths);
+                }
+            }
+            catch { }
+
+            foreach (var dir in searchDirs.Distinct())
+            {
+                if (!Directory.Exists(dir)) continue;
+                try
+                {
+                    foreach (var file in Directory.GetFiles(dir, "*.dll"))
+                    {
+                        string fname = Path.GetFileName(file);
+                        if (fname.Contains("InputSystem", StringComparison.OrdinalIgnoreCase))
+                        {
+                            try
+                            {
+                                var loaded = Assembly.LoadFrom(file);
+                                if (loaded.GetType("UnityEngine.InputSystem.InputSystem") != null)
+                                {
+                                    Log.Info($"[NewInputSystemBlocker] Loaded InputSystem assembly from: {file}");
+                                    return loaded;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Log.Warning($"[NewInputSystemBlocker] Failed loading candidate {file}: {ex.Message}");
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            return null;
+        }
+
         private static IntPtr GetDeviceKey(object device)
         {
             if (device is Il2CppObjectBase il2cppObj)
@@ -287,6 +461,14 @@ namespace DearImGuiInjectionPlus.Patches
             }
         }
 
+        private static string GetDeviceDescription(object device)
+        {
+            if (device == null) return "null";
+            int id = TryGetDeviceId(device);
+            string name = device.GetType().Name;
+            return $"{name} (ID: {id})";
+        }
+
         private static void TrackAndDisableDevice(object device)
         {
             if (device == null) return;
@@ -299,6 +481,7 @@ namespace DearImGuiInjectionPlus.Patches
                 DisableDeviceInternal(device);
                 _disabledDevices[key] = device;
                 _hasDisabledDevices = true;
+                Log.Info($"[NewInputSystemBlocker] Disabled device: {GetDeviceDescription(device)}");
             }
         }
 
@@ -377,6 +560,68 @@ namespace DearImGuiInjectionPlus.Patches
             return true;
         }
 
+        private static List<object> GetAllDevices()
+        {
+            var list = new List<object>();
+            if (_devicesProp != null)
+            {
+                var devicesObj = _devicesProp.GetValue(null, null);
+                if (devicesObj != null)
+                {
+                    if (_devicesCountProp != null && _devicesIndexerGetter != null)
+                    {
+                        int count = (int)_devicesCountProp.GetValue(devicesObj, null);
+                        for (int i = 0; i < count; i++)
+                        {
+                            var device = _devicesIndexerGetter.Invoke(devicesObj, new object[] { i });
+                            if (device != null) list.Add(device);
+                        }
+                    }
+                    else if (_devicesArrayFieldProp != null && _devicesLengthFieldProp != null)
+                    {
+                        var arr = _devicesArrayFieldProp.GetValue(devicesObj, null) as System.Collections.IList;
+                        int len = (int)_devicesLengthFieldProp.GetValue(devicesObj, null);
+                        if (arr != null)
+                        {
+                            int max = Math.Min(len, arr.Count);
+                            for (int i = 0; i < max; i++)
+                            {
+                                var device = arr[i];
+                                if (device != null) list.Add(device);
+                            }
+                        }
+                    }
+                }
+            }
+
+            var mouse = _mouseCurrentProp?.GetValue(null, null);
+            if (mouse != null && !list.Contains(mouse)) list.Add(mouse);
+            var pointer = _pointerCurrentProp?.GetValue(null, null);
+            if (pointer != null && !list.Contains(pointer)) list.Add(pointer);
+            var keyboard = _keyboardCurrentProp?.GetValue(null, null);
+            if (keyboard != null && !list.Contains(keyboard)) list.Add(keyboard);
+
+            // Register device IDs
+            foreach (var d in list)
+            {
+                int id = TryGetDeviceId(d);
+                if (id > 0)
+                {
+                    string name = d.GetType().Name.ToLowerInvariant();
+                    if (name.Contains("mouse") || name.Contains("pointer"))
+                    {
+                        _mouseDeviceIds.Add(id);
+                    }
+                    else if (name.Contains("keyboard"))
+                    {
+                        _keyboardDeviceIds.Add(id);
+                    }
+                }
+            }
+
+            return list;
+        }
+
         public static void EnforceBlocked()
         {
             EnforceBlocked(UnityInputBlocker.ShouldBlockMouse(), UnityInputBlocker.ShouldBlockKeyboard());
@@ -399,65 +644,93 @@ namespace DearImGuiInjectionPlus.Patches
             {
                 try
                 {
-                    var mouse = _mouseCurrentProp?.GetValue(null, null) ?? _pointerCurrentProp?.GetValue(null, null);
+                    if (!_hasLoggedInitialBlockDevices)
+                    {
+                        _hasLoggedInitialBlockDevices = true;
+                        var allDevs = GetAllDevices();
+                        _discoveredDevices.Clear();
+                        for (int i = 0; i < allDevs.Count; i++)
+                        {
+                            _discoveredDevices.Add(GetDeviceDescription(allDevs[i]));
+                        }
+                        Log.Info($"[NewInputSystemBlocker] Discovered {_discoveredDevices.Count} input devices on block toggle: {string.Join(", ", _discoveredDevices)}");
+                    }
+
+                    var mouse = _mouseCurrentProp?.GetValue(null, null);
                     if (mouse != null)
                     {
                         int mId = TryGetDeviceId(mouse);
-                        if (mId > 0) _mouseDeviceId = mId;
+                        if (mId > 0)
+                        {
+                            _mouseDeviceId = mId;
+                            _mouseDeviceIds.Add(mId);
+                        }
+                    }
 
-                        if (blockMouse)
-                            TrackAndDisableDevice(mouse);
-                        else
-                            EnableAndUntrackDevice(mouse);
+                    var pointer = _pointerCurrentProp?.GetValue(null, null);
+                    if (pointer != null)
+                    {
+                        int pId = TryGetDeviceId(pointer);
+                        if (pId > 0)
+                        {
+                            _pointerDeviceId = pId;
+                            _mouseDeviceIds.Add(pId);
+                        }
                     }
 
                     var keyboard = _keyboardCurrentProp?.GetValue(null, null);
                     if (keyboard != null)
                     {
                         int kId = TryGetDeviceId(keyboard);
-                        if (kId > 0) _keyboardDeviceId = kId;
-
-                        if (blockKeyboard)
-                            TrackAndDisableDevice(keyboard);
-                        else
-                            EnableAndUntrackDevice(keyboard);
+                        if (kId > 0)
+                        {
+                            _keyboardDeviceId = kId;
+                            _keyboardDeviceIds.Add(kId);
+                        }
                     }
 
-                    if (blockMouse && blockKeyboard && DearImGuiInjectionPlus.BlockAllInputsWhenOpen && _devicesProp != null)
+                    if (blockMouse)
                     {
-                        var devicesObj = _devicesProp.GetValue(null, null);
-                        if (devicesObj != null)
+                        if (mouse != null) TrackAndDisableDevice(mouse);
+                        if (pointer != null && pointer != mouse) TrackAndDisableDevice(pointer);
+
+                        var allDevices = GetAllDevices();
+                        for (int i = 0; i < allDevices.Count; i++)
                         {
-                            if (_devicesCountProp != null && _devicesIndexerGetter != null)
+                            var dev = allDevices[i];
+                            if (dev == null) continue;
+                            string name = dev.GetType().Name.ToLowerInvariant();
+                            if (name.Contains("mouse") || name.Contains("pointer") || name.Contains("touch"))
                             {
-                                int count = (int)_devicesCountProp.GetValue(devicesObj, null);
-                                for (int i = 0; i < count; i++)
-                                {
-                                    var device = _devicesIndexerGetter.Invoke(devicesObj, new object[] { i });
-                                    if (device != null)
-                                    {
-                                        TrackAndDisableDevice(device);
-                                    }
-                                }
-                            }
-                            else if (_devicesArrayFieldProp != null && _devicesLengthFieldProp != null)
-                            {
-                                var arr = _devicesArrayFieldProp.GetValue(devicesObj, null) as System.Collections.IList;
-                                int len = (int)_devicesLengthFieldProp.GetValue(devicesObj, null);
-                                if (arr != null)
-                                {
-                                    int max = Math.Min(len, arr.Count);
-                                    for (int i = 0; i < max; i++)
-                                    {
-                                        var device = arr[i];
-                                        if (device != null)
-                                        {
-                                            TrackAndDisableDevice(device);
-                                        }
-                                    }
-                                }
+                                TrackAndDisableDevice(dev);
                             }
                         }
+                    }
+                    else
+                    {
+                        if (mouse != null) EnableAndUntrackDevice(mouse);
+                        if (pointer != null) EnableAndUntrackDevice(pointer);
+                    }
+
+                    if (blockKeyboard)
+                    {
+                        if (keyboard != null) TrackAndDisableDevice(keyboard);
+
+                        var allDevices = GetAllDevices();
+                        for (int i = 0; i < allDevices.Count; i++)
+                        {
+                            var dev = allDevices[i];
+                            if (dev == null) continue;
+                            string name = dev.GetType().Name.ToLowerInvariant();
+                            if (name.Contains("keyboard") || name.Contains("key"))
+                            {
+                                TrackAndDisableDevice(dev);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (keyboard != null) EnableAndUntrackDevice(keyboard);
                     }
                 }
                 catch (Exception ex)
@@ -475,6 +748,8 @@ namespace DearImGuiInjectionPlus.Patches
             {
                 try
                 {
+                    _hasLoggedInitialBlockDevices = false;
+
                     foreach (var kvp in _disabledDevices)
                     {
                         if (kvp.Value != null)
@@ -485,10 +760,16 @@ namespace DearImGuiInjectionPlus.Patches
                     _disabledDevices.Clear();
                     _hasDisabledDevices = false;
 
-                    var mouse = _mouseCurrentProp?.GetValue(null, null) ?? _pointerCurrentProp?.GetValue(null, null);
+                    var mouse = _mouseCurrentProp?.GetValue(null, null);
                     if (mouse != null && !IsDeviceEnabled(mouse))
                     {
                         EnableDeviceInternal(mouse);
+                    }
+
+                    var pointer = _pointerCurrentProp?.GetValue(null, null);
+                    if (pointer != null && !IsDeviceEnabled(pointer))
+                    {
+                        EnableDeviceInternal(pointer);
                     }
 
                     var keyboard = _keyboardCurrentProp?.GetValue(null, null);

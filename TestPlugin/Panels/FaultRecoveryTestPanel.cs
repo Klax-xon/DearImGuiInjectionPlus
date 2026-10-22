@@ -19,7 +19,7 @@ public class FaultRecoveryTestPanel : IImGuiWindow
 {
     public string Id => "dearimgui_test_fault";
     public string Title => "4. Fault Recovery & Lifecycle";
-    public bool IsOpen { get; set; } = true;
+    public bool IsOpen { get; set; } = false;
 
     // Fault A State
     private bool _armFaultA = false;
@@ -63,10 +63,10 @@ public class FaultRecoveryTestPanel : IImGuiWindow
         ImGui.SetNextWindowSize(new Vector2(620, 680), ImGuiCond.FirstUseEver);
         if (ImGui.Begin(Title, ref open, ImGuiWindowFlags.MenuBar))
         {
-            IsOpen = open;
             DrawPanelContent();
         }
         ImGui.End();
+        IsOpen = open;
     }
 
     public void DrawPanelContent()

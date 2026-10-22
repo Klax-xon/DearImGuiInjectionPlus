@@ -22,6 +22,9 @@ namespace DearImGuiInjectionPlus.BepInEx;
 [BepInPlugin(Metadata.GUID, Metadata.Name, Metadata.Version)]
 public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
 {
+    public static int HarmonyPatchesApplied { get; private set; }
+    public static int HarmonyPatchesSkipped { get; private set; }
+
     private static Harmony _harmony;
     private static GameObject _runnerGo;
     private static ConfigEntry<bool> _blockAllInputsConfig;
@@ -156,6 +159,22 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
         }
     }
 
+    private static string FormatMethodSignature(MethodBase mb)
+    {
+        if (mb == null) return "unknown";
+        string typeName = mb.DeclaringType?.FullName ?? "Unknown";
+        var pars = string.Join(", ", mb.GetParameters().Select(p =>
+        {
+            var pt = p.ParameterType;
+            if (pt == typeof(string)) return "string";
+            if (pt == typeof(int)) return "int";
+            if (pt == typeof(bool)) return "bool";
+            if (pt == typeof(float)) return "float";
+            return pt.Name;
+        }));
+        return $"{typeName}.{mb.Name}({pars})";
+    }
+
     private static void ApplyHarmonyPatchesSafely()
     {
         _harmony = new Harmony(Metadata.GUID);
@@ -176,11 +195,12 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
                 {
                     _harmony.CreateClassProcessor(type).Patch();
                     applied++;
+                    PluginLog.Info($"[DearImGuiInjectionPlus] Applied class patch: {type.FullName}");
                 }
                 catch (Exception ex)
                 {
                     skipped++;
-                    PluginLog.Warning($"[DearImGuiInjectionPlus] Skipped patch class {type.Name} (method likely stripped in IL2CPP): {ex.Message}");
+                    PluginLog.Debug($"[DearImGuiInjectionPlus] Skipped patch class {type.Name} (method likely stripped in IL2CPP): {ex.Message}");
                 }
                 continue;
             }
@@ -204,25 +224,71 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
                         if (targetType == null || string.IsNullOrEmpty(methodName))
                         {
                             skipped++;
+                            PluginLog.Debug($"[DearImGuiInjectionPlus] Skipped patch {method.Name}: targetType or methodName is null");
                             continue;
                         }
 
-                        MethodBase targetMethod = methodType switch
+                        MethodBase targetMethod = null;
+                        if (methodType == MethodType.Getter)
                         {
-                            MethodType.Getter => argTypes != null
+                            targetMethod = argTypes != null
                                 ? targetType.GetProperty(methodName, AllFlags, null, null, argTypes, null)?.GetGetMethod(true)
-                                : targetType.GetProperty(methodName, AllFlags)?.GetGetMethod(true),
-                            MethodType.Setter => argTypes != null
+                                : targetType.GetProperty(methodName, AllFlags)?.GetGetMethod(true);
+                        }
+                        else if (methodType == MethodType.Setter)
+                        {
+                            targetMethod = argTypes != null
                                 ? targetType.GetProperty(methodName, AllFlags, null, null, argTypes, null)?.GetSetMethod(true)
-                                : targetType.GetProperty(methodName, AllFlags)?.GetSetMethod(true),
-                            _ => argTypes != null
-                                ? targetType.GetMethod(methodName, AllFlags, null, argTypes, null)
-                                : targetType.GetMethod(methodName, AllFlags)
-                        };
+                                : targetType.GetProperty(methodName, AllFlags)?.GetSetMethod(true);
+                        }
+                        else
+                        {
+                            if (argTypes != null)
+                            {
+                                targetMethod = targetType.GetMethod(methodName, AllFlags, null, argTypes, null);
+                            }
+                            else
+                            {
+                                try
+                                {
+                                    targetMethod = targetType.GetMethod(methodName, AllFlags);
+                                }
+                                catch (AmbiguousMatchException)
+                                {
+                                    // Method-binding logic associating typeof(Input) with string / int parameters
+                                    if (methodName is "GetAxis" or "GetAxisRaw" or "GetButton" or "GetButtonDown" or "GetButtonUp")
+                                    {
+                                        targetMethod = targetType.GetMethod(methodName, AllFlags, null, new[] { typeof(string) }, null);
+                                    }
+                                    else if (methodName is "GetMouseButton" or "GetMouseButtonDown" or "GetMouseButtonUp")
+                                    {
+                                        targetMethod = targetType.GetMethod(methodName, AllFlags, null, new[] { typeof(int) }, null);
+                                    }
+                                    else if (methodName is "GetKey" or "GetKeyDown" or "GetKeyUp")
+                                    {
+                                        targetMethod = targetType.GetMethod(methodName, AllFlags, null, new[] { typeof(KeyCode) }, null)
+                                                       ?? targetType.GetMethod(methodName, AllFlags, null, new[] { typeof(string) }, null);
+                                    }
+                                }
+
+                                if (targetMethod == null)
+                                {
+                                    if (methodName is "GetAxis" or "GetAxisRaw" or "GetButton" or "GetButtonDown" or "GetButtonUp")
+                                    {
+                                        targetMethod = targetType.GetMethod(methodName, AllFlags, null, new[] { typeof(string) }, null);
+                                    }
+                                    else if (methodName is "GetMouseButton" or "GetMouseButtonDown" or "GetMouseButtonUp")
+                                    {
+                                        targetMethod = targetType.GetMethod(methodName, AllFlags, null, new[] { typeof(int) }, null);
+                                    }
+                                }
+                            }
+                        }
 
                         if (targetMethod == null)
                         {
                             skipped++;
+                            PluginLog.Debug($"[DearImGuiInjectionPlus] Skipped: {targetType.FullName}.{methodName} (Method not found or stripped by UnityLinker)");
                             continue;
                         }
 
@@ -232,6 +298,7 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
                         if (nativePtrField == null || (IntPtr)nativePtrField.GetValue(null) == IntPtr.Zero)
                         {
                             skipped++;
+                            PluginLog.Debug($"[DearImGuiInjectionPlus] Skipped: {FormatMethodSignature(targetMethod)} (NativeMethodInfoPtr is null/zero - stripped in IL2CPP)");
                             continue;
                         }
 
@@ -250,7 +317,7 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
                     catch (Exception ex)
                     {
                         skipped++;
-                        PluginLog.Warning($"[DearImGuiInjectionPlus] Skipped stripped IL2CPP Input patch {method.Name} ({attr.info.methodName}): {ex.Message}");
+                        PluginLog.Debug($"[DearImGuiInjectionPlus] Skipped stripped IL2CPP Input patch {method.Name} ({attr.info.methodName}): {ex.Message}");
                     }
                 }
             }
@@ -261,11 +328,12 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
                 {
                     _harmony.Patch(kvp.Key, kvp.Value.Prefix, kvp.Value.Postfix);
                     applied++;
+                    PluginLog.Info($"[DearImGuiInjectionPlus] Applied: {FormatMethodSignature(kvp.Key)}");
                 }
                 catch (Exception ex)
                 {
                     skipped++;
-                    PluginLog.Warning($"[DearImGuiInjectionPlus] Skipped IL2CPP Input detour for {kvp.Key.Name}: {ex.Message}");
+                    PluginLog.Debug($"[DearImGuiInjectionPlus] Skipped IL2CPP Input detour for {FormatMethodSignature(kvp.Key)}: {ex.Message}");
                 }
             }
         }
@@ -278,6 +346,9 @@ public class DearImGuiInjectionPlusBaseUnityPlugin : BasePlugin
 
         // Also hook UnityEngineInternal.Input.NativeInputSystem.NotifyUpdate for New Input System raw event filtering
         NewInputSystemBlocker.ApplyNativeInputHook(_harmony, ref applied, ref skipped);
+
+        HarmonyPatchesApplied = applied;
+        HarmonyPatchesSkipped = skipped;
 
         PluginLog.Info($"[DearImGuiInjectionPlus] Harmony & native ICall patching complete ({applied} applied, {skipped} skipped).");
     }

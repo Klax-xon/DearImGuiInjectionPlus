@@ -19,6 +19,12 @@
 	</PropertyGroup>
 
 	<ItemGroup>
+		<AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+			<_Parameter1>TestPlugin</_Parameter1>
+		</AssemblyAttribute>
+	</ItemGroup>
+
+	<ItemGroup>
 		<PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.0.0" />
 		<PackageReference Include="BepInEx.Unity.IL2CPP" Version="6.0.0-be.790" />
 	</ItemGroup>
@@ -54,6 +60,10 @@
 		</Reference>
 		<Reference Include="UnityEngine.InputLegacyModule">
 			<HintPath>..\libs\net6\UnityEngine.InputLegacyModule.dll</HintPath>
+			<Private>False</Private>
+		</Reference>
+		<Reference Include="UnityEngine.InputModule">
+			<HintPath>..\libs\net6\UnityEngine.InputModule.dll</HintPath>
 			<Private>False</Private>
 		</Reference>
 		<Reference Include="ImGui.NET">

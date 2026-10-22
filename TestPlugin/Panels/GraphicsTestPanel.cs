@@ -15,7 +15,7 @@ public class GraphicsTestPanel : IImGuiWindow
 {
     public string Id => "dearimgui_test_graphics";
     public string Title => "1. Graphics & SwapChain Telemetry";
-    public bool IsOpen { get; set; } = true;
+    public bool IsOpen { get; set; } = false;
 
     // Buffer Stress State (DXH-04, TM-08)
     private bool _stressEnabled = false;
@@ -44,10 +44,10 @@ public class GraphicsTestPanel : IImGuiWindow
         ImGui.SetNextWindowSize(new Vector2(620, 680), ImGuiCond.FirstUseEver);
         if (ImGui.Begin(Title, ref open, ImGuiWindowFlags.MenuBar))
         {
-            IsOpen = open;
             DrawPanelContent();
         }
         ImGui.End();
+        IsOpen = open;
     }
 
     public void DrawPanelContent()

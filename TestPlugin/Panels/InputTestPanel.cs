@@ -16,7 +16,7 @@ public class InputTestPanel : IImGuiWindow
 {
     public string Id => "dearimgui_test_input";
     public string Title => "3. Input, Windows & Unicode Validator";
-    public bool IsOpen { get; set; } = true;
+    public bool IsOpen { get; set; } = false;
 
     // Unicode Input Buffer (1024 bytes UTF-8)
     private readonly byte[] _inputBuffer = new byte[1024];
@@ -69,10 +69,10 @@ public class InputTestPanel : IImGuiWindow
         ImGui.SetNextWindowSize(new Vector2(640, 720), ImGuiCond.FirstUseEver);
         if (ImGui.Begin(Title, ref open, ImGuiWindowFlags.MenuBar))
         {
-            IsOpen = open;
             DrawPanelContent();
         }
         ImGui.End();
+        IsOpen = open;
     }
 
     public void DrawPanelContent()

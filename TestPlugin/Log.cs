@@ -1,4 +1,4 @@
-﻿namespace TestPlugin;
+namespace TestPlugin;
 
 internal interface ILog
 {

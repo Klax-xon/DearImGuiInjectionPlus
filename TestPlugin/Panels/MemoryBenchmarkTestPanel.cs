@@ -16,7 +16,7 @@ public class MemoryBenchmarkTestPanel : IImGuiWindow
 {
     public string Id => "dearimgui_test_memory";
     public string Title => "5. Profiler & Memory Benchmarks";
-    public bool IsOpen { get; set; } = true;
+    public bool IsOpen { get; set; } = false;
 
     // Win32 Process Memory via psapi.dll
     [StructLayout(LayoutKind.Sequential)]
@@ -77,10 +77,10 @@ public class MemoryBenchmarkTestPanel : IImGuiWindow
         ImGui.SetNextWindowSize(new Vector2(620, 720), ImGuiCond.FirstUseEver);
         if (ImGui.Begin(Title, ref open, ImGuiWindowFlags.MenuBar))
         {
-            IsOpen = open;
             DrawPanelContent();
         }
         ImGui.End();
+        IsOpen = open;
     }
 
     private void UpdateMetrics()

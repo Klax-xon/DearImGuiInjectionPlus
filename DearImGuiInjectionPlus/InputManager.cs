@@ -29,6 +29,24 @@ internal static class InputManager
     private static volatile int _pendingKeyReleaseFlushFrames;
 
     internal static bool HasPendingKeyReleaseFlush => _pendingKeyReleaseFlushFrames > 0;
+    public static int PendingKeyReleaseFlushFrames => _pendingKeyReleaseFlushFrames;
+    public static int DownKeysCount => GetDownKeysCount();
+
+    public static int GetDownKeysCount()
+    {
+        return System.Numerics.BitOperations.PopCount(_downKeys0)
+             + System.Numerics.BitOperations.PopCount(_downKeys1)
+             + System.Numerics.BitOperations.PopCount(_downKeys2)
+             + System.Numerics.BitOperations.PopCount(_downKeys3);
+    }
+
+    public static void FlushDepressedKeysTransition()
+    {
+        if (_windowHandle != IntPtr.Zero)
+        {
+            ReleaseRemainingDepressedKeys(_windowHandle, keepTrackedForSubclassPassThrough: DearImGuiInjectionPlus.IsCursorVisible);
+        }
+    }
 
     internal static void ConsumePendingKeyReleaseFlushFrame()
     {
@@ -260,10 +278,12 @@ internal static class InputManager
             // This stops Unity's camera from rotating while moving the mouse over ImGui
             if ((int)msg == 0x00FF || msg == WindowMessage.WM_INPUT)
             {
-                if (DearImGuiInjectionPlus.BlockAllInputsWhenOpen || DearImGuiInjectionPlus.WantCaptureMouse)
+                bool swallow = DearImGuiInjectionPlus.IsCursorVisible && (DearImGuiInjectionPlus.BlockAllInputsWhenOpen || DearImGuiInjectionPlus.WantCaptureMouse);
+                if (swallow)
                 {
                     // Let Windows clean up raw input buffers, but DO NOT forward to Unity
-                    return User32.DefWindowProc(hWnd, msg, wParam, lParam);
+                    User32.DefWindowProc(hWnd, msg, wParam, lParam);
+                    return IntPtr.Zero;
                 }
                 return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
             }
@@ -279,7 +299,12 @@ internal static class InputManager
                     return Comctl32.DefSubclassProc(hWnd, msg, wParam, lParam);
                 }
 
-                if (DearImGuiInjectionPlus.BlockAllInputsWhenOpen || DearImGuiInjectionPlus.WantCaptureMouse)
+                bool swallowMouse = DearImGuiInjectionPlus.IsCursorVisible &&
+                    (DearImGuiInjectionPlus.BlockAllInputsWhenOpen ||
+                     DearImGuiInjectionPlus.WantCaptureMouse ||
+                     ImGuiWin32Impl.IsAnyMouseButtonDown);
+
+                if (swallowMouse)
                 {
                     return IntPtr.Zero;
                 }

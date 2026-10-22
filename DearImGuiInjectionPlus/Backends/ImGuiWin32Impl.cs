@@ -16,6 +16,7 @@ public static unsafe class ImGuiWin32Impl
     private static IntPtr _mouseHandle;
     private static volatile int _mouseTrackedArea;   // 0: not tracked, 1: client are, 2: non-client area
     private static volatile int _mouseButtonsDown;
+    public static bool IsAnyMouseButtonDown => _mouseButtonsDown != 0;
     private static readonly ConcurrentQueue<InputEvent> _eventQueue = new();
     private static long _time;
     private static long _ticksPerSecond;
@@ -580,6 +581,16 @@ public static unsafe class ImGuiWin32Impl
 
         switch (msg)
         {
+            case WindowMessage.WM_INPUT:
+                {
+                    bool shouldSwallow = DearImGuiInjectionPlus.IsCursorVisible && (DearImGuiInjectionPlus.BlockAllInputsWhenOpen || DearImGuiInjectionPlus.WantCaptureMouse);
+                    Log.Debug($"[ImGuiWin32Impl] WM_INPUT received. Action: {(shouldSwallow ? "Swallowed" : "Forwarded")}");
+                    if (shouldSwallow)
+                    {
+                        return (IntPtr)1;
+                    }
+                    return IntPtr.Zero;
+                }
             case WindowMessage.WM_MOUSEMOVE:
             case WindowMessage.WM_NCMOUSEMOVE:
                 {

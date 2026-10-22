@@ -24,7 +24,7 @@ public class SampleModWindow : IImGuiWindow
 {
     public string Id => "sample_mod_window";
     public string Title => "DearImGuiInjectionPlus Mod View";
-    public bool IsOpen { get; set; } = true;
+    public bool IsOpen { get; set; } = false;
 
     private readonly StateSnapshotPipeline<PlayerDataSnapshot> _snapshotPipeline;
     private readonly byte[] _inputBuffer = new byte[64];
@@ -36,11 +36,12 @@ public class SampleModWindow : IImGuiWindow
 
     public void OnRender()
     {
+        if (!IsOpen)
+            return;
+
         bool open = IsOpen;
         if (ImGui.Begin("DearImGuiInjectionPlus - Developer Overlay", ref open, ImGuiWindowFlags.MenuBar))
         {
-            IsOpen = open;
-
             ImGui.TextColored(new System.Numerics.Vector4(0.2f, 1f, 0.4f, 1f), "Status: Zero-Crash Architecture Active");
             ImGui.Separator();
 
@@ -72,6 +73,7 @@ public class SampleModWindow : IImGuiWindow
             }
         }
         ImGui.End();
+        IsOpen = open;
     }
 }
 
@@ -85,12 +87,13 @@ public class TestPlugin : BasePlugin
     private StateSnapshotPipeline<PlayerDataSnapshot> _playerSnapshotPipeline;
     private SampleModWindow _sampleModWindow;
 
-    // Test Suite Panels (TM-01 through TM-10)
+    // Test Suite Panels (TM-01 through TM-14)
     private GraphicsTestPanel _graphicsPanel;
     private ConcurrencyTestPanel _concurrencyPanel;
     private InputTestPanel _inputPanel;
     private FaultRecoveryTestPanel _faultPanel;
     private MemoryBenchmarkTestPanel _memoryPanel;
+    private Il2CppTestPanel _il2CppPanel;
     private TestSuiteMasterPanel _masterPanel;
 
     // Registered Tab handles for clean teardown (LC-07)
@@ -117,12 +120,14 @@ public class TestPlugin : BasePlugin
         _inputPanel = new InputTestPanel();
         _faultPanel = new FaultRecoveryTestPanel();
         _memoryPanel = new MemoryBenchmarkTestPanel();
+        _il2CppPanel = new Il2CppTestPanel();
         _masterPanel = new TestSuiteMasterPanel(
             _graphicsPanel,
             _concurrencyPanel,
             _inputPanel,
             _faultPanel,
-            _memoryPanel);
+            _memoryPanel,
+            _il2CppPanel);
 
         PluginLog.Info("[TestPlugin] Test panels initialized successfully.");
 
@@ -169,6 +174,7 @@ public class TestPlugin : BasePlugin
         DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterWindow(_inputPanel);
         DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterWindow(_faultPanel);
         DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterWindow(_memoryPanel);
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterWindow(_il2CppPanel);
 
         // 4. Register Unified "DearImGui Test Suite" Menu Bar Tab (LC-07, TM-07)
         _testSuiteTabHandle = DearImGuiInjectionPlus.DearImGuiInjectionPlus.RegisterTab("DearImGui Test Suite", "Test Suite Navigation", RenderTestSuiteMenu);
@@ -203,6 +209,7 @@ public class TestPlugin : BasePlugin
         DearImGuiInjectionPlus.DearImGuiInjectionPlus.UnregisterWindow(_inputPanel);
         DearImGuiInjectionPlus.DearImGuiInjectionPlus.UnregisterWindow(_faultPanel);
         DearImGuiInjectionPlus.DearImGuiInjectionPlus.UnregisterWindow(_memoryPanel);
+        DearImGuiInjectionPlus.DearImGuiInjectionPlus.UnregisterWindow(_il2CppPanel);
 
         // 4. Unregister Test Suite Tab
         _testSuiteTabHandle?.Dispose();
@@ -301,6 +308,11 @@ public class TestPlugin : BasePlugin
             _memoryPanel.IsOpen = !_memoryPanel.IsOpen;
         }
 
+        if (ImGui.MenuItem("6. IL2CPP & Interop Boundary Validator", "", _il2CppPanel.IsOpen))
+        {
+            _il2CppPanel.IsOpen = !_il2CppPanel.IsOpen;
+        }
+
         ImGui.Separator();
 
         if (ImGui.MenuItem("Open All Test Windows"))
@@ -329,5 +341,6 @@ public class TestPlugin : BasePlugin
         _inputPanel.IsOpen = open;
         _faultPanel.IsOpen = open;
         _memoryPanel.IsOpen = open;
+        _il2CppPanel.IsOpen = open;
     }
 }
